@@ -355,7 +355,7 @@ Create a container
 -   **AttachStdout** - Boolean value, attaches to `stdout`.
 -   **AttachStderr** - Boolean value, attaches to `stderr`.
 -   **Tty** - Boolean value, Attach standard streams to a `tty`, including `stdin` if it is not closed.
--   **OpenStdin** - Boolean value, opens stdin,
+-   **OpenStdin** - Boolean value, opens `stdin`,
 -   **StdinOnce** - Boolean value, close `stdin` after the 1 attached client disconnects.
 -   **Env** - A list of environment variables in the form of `["VAR=value"[,"VAR2=value2"]]`
 -   **Labels** - Adds a map of labels to a container. To specify a map: `{"key":"value"[,"key2":"value2"]}`
@@ -374,10 +374,17 @@ Create a container
 -   **StopSignal** - Signal to stop a container as a string or unsigned integer. `SIGTERM` by default.
 -   **HostConfig**
     -   **Binds** – A list of volume bindings for this container. Each volume binding is a string in one of these forms:
-           + `host_path:container_path` to bind-mount a host path into the container
-           + `host_path:container_path:ro` to make the bind-mount read-only inside the container.
-           + `volume_name:container_path` to bind-mount a volume managed by a volume plugin into the container.
-           + `volume_name:container_path:ro` to make the bind mount read-only inside the container.
+           + `host-src:container-dest` to bind-mount a host path into the
+             container. Both `host-src`, and `container-dest` must be an
+             _absolute_ path.
+           + `host-src:container-dest:ro` to make the bind-mount read-only
+             inside the container. Both `host-src`, and `container-dest` must be
+             an _absolute_ path.
+           + `volume-name:container-dest` to bind-mount a volume managed by a
+             volume driver into the container. `container-dest` must be an
+             _absolute_ path.
+           + `volume-name:container-dest:ro` to mount the volume read-only
+             inside the container.  `container-dest` must be an _absolute_ path.
     -   **Links** - A list of links for the container. Each link entry should be
           in the form of `container_name:alias`.
     -   **Memory** - Memory limit in bytes.
@@ -487,7 +494,7 @@ Return low-level information on the container `id`
     HTTP/1.1 200 OK
     Content-Type: application/json
 
-    {
+	{
 		"AppArmorProfile": "",
 		"Args": [
 			"-c",
@@ -1252,43 +1259,43 @@ Attach to the container `id`
 -   **409** - container is paused
 -   **500** – server error
 
-    **Stream details**:
+**Stream details**:
 
-    When using the TTY setting is enabled in
-    [`POST /containers/create`
-    ](#create-a-container),
-    the stream is the raw data from the process PTY and client's `stdin`.
-    When the TTY is disabled, then the stream is multiplexed to separate
-    `stdout` and `stderr`.
+When using the TTY setting is enabled in
+[`POST /containers/create`
+](#create-a-container),
+the stream is the raw data from the process PTY and client's `stdin`.
+When the TTY is disabled, then the stream is multiplexed to separate
+`stdout` and `stderr`.
 
-    The format is a **Header** and a **Payload** (frame).
+The format is a **Header** and a **Payload** (frame).
 
-    **HEADER**
+**HEADER**
 
-    The header contains the information which the stream writes (`stdout` or
-    `stderr`). It also contains the size of the associated frame encoded in the
-    last four bytes (`uint32`).
+The header contains the information which the stream writes (`stdout` or
+`stderr`). It also contains the size of the associated frame encoded in the
+last four bytes (`uint32`).
 
-    It is encoded on the first eight bytes like this:
+It is encoded on the first eight bytes like this:
 
-        header := [8]byte{STREAM_TYPE, 0, 0, 0, SIZE1, SIZE2, SIZE3, SIZE4}
+    header := [8]byte{STREAM_TYPE, 0, 0, 0, SIZE1, SIZE2, SIZE3, SIZE4}
 
-    `STREAM_TYPE` can be:
+`STREAM_TYPE` can be:
 
 -   0: `stdin` (is written on `stdout`)
 -   1: `stdout`
 -   2: `stderr`
 
-    `SIZE1, SIZE2, SIZE3, SIZE4` are the four bytes of
-    the `uint32` size encoded as big endian.
+`SIZE1, SIZE2, SIZE3, SIZE4` are the four bytes of
+the `uint32` size encoded as big endian.
 
-    **PAYLOAD**
+**PAYLOAD**
 
-    The payload is the raw stream.
+The payload is the raw stream.
 
-    **IMPLEMENTATION**
+**IMPLEMENTATION**
 
-    The simplest way to implement the Attach protocol is the following:
+The simplest way to implement the Attach protocol is the following:
 
     1.  Read eight bytes.
     2.  Choose `stdout` or `stderr` depending on the first byte.
@@ -1658,19 +1665,27 @@ The archive may include any number of other files,
 which are accessible in the build context (See the [*ADD build
 command*](../../reference/builder.md#add)).
 
+The Docker daemon performs a preliminary validation of the `Dockerfile` before
+starting the build, and returns an error if the syntax is incorrect. After that,
+each instruction is run one-by-one until the ID of the new image is output.
+
 The build is canceled if the client drops the connection by quitting
 or being killed.
 
 **Query parameters**:
 
--   **dockerfile** - Path within the build context to the Dockerfile. This is
-        ignored if `remote` is specified and points to an individual filename.
+-   **dockerfile** - Path within the build context to the `Dockerfile`. This is
+        ignored if `remote` is specified and points to an external `Dockerfile`.
 -   **t** – A name and optional tag to apply to the image in the `name:tag` format.
         If you omit the `tag` the default `latest` value is assumed.
         You can provide one or more `t` parameters.
--   **remote** – A Git repository URI or HTTP/HTTPS URI build source. If the
-        URI specifies a filename, the file's contents are placed into a file
-        called `Dockerfile`.
+-   **remote** – A Git repository URI or HTTP/HTTPS context URI. If the
+        URI points to a single text file, the file's contents are placed into
+        a file called `Dockerfile` and the image is built from that file. If
+        the URI points to a tarball, the file is downloaded by the daemon and
+        the contents therein used as the context for the build. If the URI
+        points to a tarball and the `dockerfile` parameter is also specified,
+        there must be a file with the corresponding path inside the tarball.
 -   **q** – Suppress verbose build output.
 -   **nocache** – Do not use the cache when building the image.
 -   **pull** - Attempt to pull the image even if an older image exists locally.
@@ -1690,7 +1705,7 @@ or being killed.
 -   **shmsize** - Size of `/dev/shm` in bytes. The size must be greater than 0.  If omitted the system uses 64MB.
 -   **labels** – JSON map of string pairs for labels to set on the image.
 
-    Request Headers:
+**Request Headers**:
 
 -   **Content-type** – Set to `"application/tar"`.
 -   **X-Registry-Config** – A base64-url-safe-encoded Registry Auth Config JSON
@@ -1729,7 +1744,7 @@ Create an image either by pulling it from the registry or by importing it
 
 **Example request**:
 
-    POST /images/create?fromImage=ubuntu HTTP/1.1
+    POST /images/create?fromImage=busybox&tag=latest HTTP/1.1
 
 **Example response**:
 
@@ -1756,9 +1771,10 @@ a base64-encoded AuthConfig object.
 -   **repo** – Repository name given to an image when it is imported.
         The repo may include a tag. This parameter may only be used when importing
         an image.
--   **tag** – Tag or digest.
+-   **tag** – Tag or digest. If empty when pulling an image, this causes all tags
+        for the given image to be pulled.
 
-    Request Headers:
+**Request Headers**:
 
 -   **X-Registry-Auth** – base64-encoded AuthConfig object, containing either login information, or a token
     - Credential based login:
@@ -1993,7 +2009,7 @@ The push is cancelled if the HTTP connection is closed.
 
 -   **tag** – The tag to associate with the image on the registry. This is optional.
 
-Request Headers:
+**Request Headers**:
 
 -   **X-Registry-Auth** – base64-encoded AuthConfig object, containing either login information, or a token
     - Credential based login:
@@ -2274,7 +2290,7 @@ Show the docker version information
     Content-Type: application/json
 
     {
-         "Version": "1.10.0-dev",
+         "Version": "1.11.0",
          "Os": "linux",
          "KernelVersion": "3.19.0-23-generic",
          "GoVersion": "go1.4.2",
@@ -2388,7 +2404,7 @@ Create a new image from a container's changes
 
 `GET /events`
 
-Get container events from docker, either in real time via streaming, or via polling (using since).
+Get container events from docker, in real time via streaming.
 
 Docker containers report the following events:
 
@@ -2568,8 +2584,8 @@ Docker networks report the following events:
 
 **Query parameters**:
 
--   **since** – Timestamp used for polling
--   **until** – Timestamp used for polling
+-   **since** – Timestamp. Show all events created since timestamp and then stream
+-   **until** – Timestamp. Show events created until given timestamp and stop streaming
 -   **filters** – A json encoded value of the filters (a map[string][]string) to process on the event list. Available filters:
   -   `container=<string>`; -- container to filter
   -   `event=<string>`; -- event to filter
@@ -2653,12 +2669,39 @@ See the [image tarball format](#image-tarball-format) for more details.
 **Example request**
 
     POST /images/load
+    Content-Type: application/x-tar
 
     Tarball in body
 
 **Example response**:
 
     HTTP/1.1 200 OK
+    Content-Type: application/json
+    Transfer-Encoding: chunked
+
+    {"status":"Loading layer","progressDetail":{"current":32768,"total":1292800},"progress":"[=                                                 ] 32.77 kB/1.293 MB","id":"8ac8bfaff55a"}
+    {"status":"Loading layer","progressDetail":{"current":65536,"total":1292800},"progress":"[==                                                ] 65.54 kB/1.293 MB","id":"8ac8bfaff55a"}
+    {"status":"Loading layer","progressDetail":{"current":98304,"total":1292800},"progress":"[===                                               ]  98.3 kB/1.293 MB","id":"8ac8bfaff55a"}
+    {"status":"Loading layer","progressDetail":{"current":131072,"total":1292800},"progress":"[=====                                             ] 131.1 kB/1.293 MB","id":"8ac8bfaff55a"}
+    ...
+    {"stream":"Loaded image: busybox:latest\n"}
+
+**Example response**:
+
+If the "quiet" query parameter is set to `true` / `1` (`?quiet=1`), progress 
+details are suppressed, and only a confirmation message is returned once the
+action completes.
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+    Transfer-Encoding: chunked
+
+    {"stream":"Loaded image: busybox:latest\n"}
+
+**Query parameters**:
+
+-   **quiet** – Boolean value, suppress progress details during load. Defaults
+      to `0` / `false` if omitted.
 
 **Status codes**:
 
@@ -2697,16 +2740,16 @@ Sets up an exec instance in a running container `id`
     POST /containers/e90e34656806/exec HTTP/1.1
     Content-Type: application/json
 
-      {
-       "AttachStdin": false,
-       "AttachStdout": true,
-       "AttachStderr": true,
-       "DetachKeys": "ctrl-p,ctrl-q",
-       "Tty": false,
-       "Cmd": [
-                     "date"
-             ]
-      }
+    {
+      "AttachStdin": true,
+      "AttachStdout": true,
+      "AttachStderr": true,
+      "Cmd": ["sh"],
+      "DetachKeys": "ctrl-p,ctrl-q",
+      "Privileged": true,
+      "Tty": true,
+      "User": "123:456"
+    }
 
 **Example response**:
 
@@ -2728,7 +2771,10 @@ Sets up an exec instance in a running container `id`
         where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
 -   **Tty** - Boolean value to allocate a pseudo-TTY.
 -   **Cmd** - Command to run specified as a string or an array of strings.
-
+-   **Privileged** - Boolean value, runs the exec process with extended privileges.
+-   **User** - A string value specifying the user, and optionally, group to run
+        the exec process inside the container. Format is one of: `"user"`,
+        `"user:group"`, `"uid"`, or `"uid:gid"`.
 
 **Status codes**:
 
@@ -2773,8 +2819,9 @@ interactive session with the `exec` command.
 -   **404** – no such exec instance
 -   **409** - container is paused
 
-    **Stream details**:
-    Similar to the stream behavior of `POST /containers/(id or name)/attach` API
+**Stream details**:
+
+Similar to the stream behavior of `POST /containers/(id or name)/attach` API
 
 ### Exec Resize
 
@@ -2819,25 +2866,25 @@ Return low-level information about the `exec` command `id`.
     Content-Type: application/json
 
     {
-        "CanRemove": false,
-        "ContainerID": "b53ee82b53a40c7dca428523e34f741f3abc51d9f297a14ff874bf761b995126",
-        "DetachKeys": "",
-        "ExitCode": 2,
-        "ID": "f33bbfb39f5b142420f4759b2348913bd4a8d1a6d7fd56499cb41a1bb91d7b3b",
-        "OpenStderr": true,
-        "OpenStdin": true,
-        "OpenStdout": true,
-        "ProcessConfig": {
-            "arguments": [
-                "-c",
-                "exit 2"
-            ],
-            "entrypoint": "sh",
-            "privileged": false,
-            "tty": true,
-            "user": "1000"
-        },
-        "Running": false
+      "CanRemove": false,
+      "ContainerID": "b53ee82b53a40c7dca428523e34f741f3abc51d9f297a14ff874bf761b995126",
+      "DetachKeys": "",
+      "ExitCode": 2,
+      "ID": "f33bbfb39f5b142420f4759b2348913bd4a8d1a6d7fd56499cb41a1bb91d7b3b",
+      "OpenStderr": true,
+      "OpenStdin": true,
+      "OpenStdout": true,
+      "ProcessConfig": {
+        "arguments": [
+          "-c",
+          "exit 2"
+        ],
+        "entrypoint": "sh",
+        "privileged": false,
+        "tty": true,
+        "user": "1000"
+      },
+      "Running": false
     }
 
 **Status codes**:
@@ -2897,7 +2944,7 @@ Create a volume
       "Labels": {
         "com.example.some-label": "some-value",
         "com.example.some-other-label": "some-other-value"
-      },
+      }
     }
 
 **Example response**:
@@ -2912,7 +2959,7 @@ Create a volume
       "Labels": {
         "com.example.some-label": "some-value",
         "com.example.some-other-label": "some-other-value"
-      },
+      }
     }
 
 **Status codes**:
@@ -2926,7 +2973,7 @@ Create a volume
 - **Driver** - Name of the volume driver to use. Defaults to `local` for the name.
 - **DriverOpts** - A mapping of driver options and values. These options are
     passed directly to the driver and are driver specific.
-- **Labels** - Labels to set on the volume, specified as a map: `{"key":"value" [,"key2":"value2"]}`
+- **Labels** - Labels to set on the volume, specified as a map: `{"key":"value","key2":"value2"}`
 
 ### Inspect a volume
 
@@ -2944,13 +2991,13 @@ Return low-level information on the volume `name`
     Content-Type: application/json
 
     {
-        "Name": "tardis",
-        "Driver": "local",
-        "Mountpoint": "/var/lib/docker/volumes/tardis/_data",
-        "Labels": {
-            "com.example.some-label": "some-value",
-            "com.example.some-other-label": "some-other-value"
-        }
+      "Name": "tardis",
+      "Driver": "local",
+      "Mountpoint": "/var/lib/docker/volumes/tardis/_data",
+      "Labels": {
+          "com.example.some-label": "some-value",
+          "com.example.some-other-label": "some-other-value"
+      }
     }
 
 **Status codes**:
@@ -3153,18 +3200,18 @@ Content-Type: application/json
   "EnableIPv6": true,
   "IPAM":{
     "Config":[
-       {
-          "Subnet":"172.20.0.0/16",
-          "IPRange":"172.20.10.0/24",
-          "Gateway":"172.20.10.11"
-        },
-        {
-          "Subnet":"2001:db8:abcd::/64",
-          "Gateway":"2001:db8:abcd::1011"
-        }
+      {
+        "Subnet":"172.20.0.0/16",
+        "IPRange":"172.20.10.0/24",
+        "Gateway":"172.20.10.11"
+      },
+      {
+        "Subnet":"2001:db8:abcd::/64",
+        "Gateway":"2001:db8:abcd::1011"
+      }
     ],
     "Options": {
-        "foo": "bar"
+      "foo": "bar"
     }
   },
   "Internal":true,
@@ -3343,4 +3390,4 @@ To set cross origin requests to the remote api please give values to
 `--api-cors-header` when running Docker in daemon mode. Set * (asterisk) allows all,
 default or blank means CORS disabled
 
-    $ docker daemon -H="192.168.1.9:2375" --api-cors-header="http://foo.bar"
+    $ dockerd -H="192.168.1.9:2375" --api-cors-header="http://foo.bar"

@@ -41,7 +41,7 @@ options on a running or a stopped container. On kernel version older than
 4.6, you can only update `--kernel-memory` on a stopped container or on
 a running container with kernel memory initialized.
 
-## EXAMPLES
+## Examples
 
 The following sections illustrate ways to use this command.
 
@@ -107,3 +107,7 @@ To update restart policy for one or more containers:
 ```bash
 $ docker update --restart=on-failure:3 abebf7571666 hopeful_morse
 ```
+
+Note that if the container is started with "--rm" flag, you cannot update the restart
+policy for it. The `AutoRemove` and `RestartPolicy` are mutually exclusive for the
+container.

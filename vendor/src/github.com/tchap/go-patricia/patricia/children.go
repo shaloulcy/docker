@@ -70,9 +70,9 @@ func (list *sparseChildList) add(child *Trie) childList {
 func (list *sparseChildList) remove(b byte) {
 	for i, node := range list.children {
 		if node.prefix[0] == b {
-			list.children, list.children[len(list.children)-1] =
-				append(list.children[:i], list.children[i+1:]...),
-				nil
+			list.children[i] = list.children[len(list.children)-1]
+			list.children[len(list.children)-1] = nil
+			list.children = list.children[:len(list.children)-1]
 			return
 		}
 	}

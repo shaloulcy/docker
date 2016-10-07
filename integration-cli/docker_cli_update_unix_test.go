@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/integration/checker"
 	"github.com/docker/docker/pkg/parsers/kernel"
-	"github.com/docker/engine-api/types"
 	"github.com/go-check/check"
 )
 
@@ -235,4 +235,18 @@ func (s *DockerSuite) TestUpdateStats(c *check.C) {
 
 	c.Assert(preMemLimit, checker.Equals, curMemLimit)
 
+}
+
+func (s *DockerSuite) TestUpdateMemoryWithSwapMemory(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	testRequires(c, memoryLimitSupport)
+	testRequires(c, swapMemorySupport)
+
+	name := "test-update-container"
+	dockerCmd(c, "run", "-d", "--name", name, "--memory", "300M", "busybox", "top")
+	out, _, err := dockerCmdWithError("update", "--memory", "800M", name)
+	c.Assert(err, checker.NotNil)
+	c.Assert(out, checker.Contains, "Memory limit should be smaller than already set memoryswap limit")
+
+	dockerCmd(c, "update", "--memory", "800M", "--memory-swap", "1000M", name)
 }

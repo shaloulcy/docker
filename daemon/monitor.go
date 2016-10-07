@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/daemon/exec"
 	"github.com/docker/docker/libcontainerd"
 	"github.com/docker/docker/runconfig"
@@ -29,6 +30,14 @@ func (daemon *Daemon) StateChanged(id string, e libcontainerd.StateInfo) error {
 		daemon.updateHealthMonitor(c)
 		daemon.LogContainerEvent(c, "oom")
 	case libcontainerd.StateExit:
+		// if container's AutoRemove flag is set, remove it after clean up
+		if c.HostConfig.AutoRemove {
+			defer func() {
+				if err := daemon.ContainerRm(c.ID, &types.ContainerRmConfig{ForceRemove: true, RemoveVolume: true}); err != nil {
+					logrus.Errorf("can't remove container %s: %v", c.ID, err)
+				}
+			}()
+		}
 		c.Lock()
 		defer c.Unlock()
 		c.Wait()
@@ -81,6 +90,7 @@ func (daemon *Daemon) StateChanged(id string, e libcontainerd.StateInfo) error {
 		// Container is already locked in this case
 		c.SetRunning(int(e.Pid), e.State == libcontainerd.StateStart)
 		c.HasBeenManuallyStopped = false
+		c.HasBeenStartedBefore = true
 		if err := c.ToDisk(); err != nil {
 			c.Reset(false)
 			return err
@@ -90,11 +100,17 @@ func (daemon *Daemon) StateChanged(id string, e libcontainerd.StateInfo) error {
 	case libcontainerd.StatePause:
 		// Container is already locked in this case
 		c.Paused = true
+		if err := c.ToDisk(); err != nil {
+			return err
+		}
 		daemon.updateHealthMonitor(c)
 		daemon.LogContainerEvent(c, "pause")
 	case libcontainerd.StateResume:
 		// Container is already locked in this case
 		c.Paused = false
+		if err := c.ToDisk(); err != nil {
+			return err
+		}
 		daemon.updateHealthMonitor(c)
 		daemon.LogContainerEvent(c, "unpause")
 	}
@@ -146,7 +162,9 @@ func (daemon *Daemon) AttachStreams(id string, iop libcontainerd.IOPipe) error {
 		if iop.Stdin != nil {
 			go func() {
 				io.Copy(iop.Stdin, stdin)
-				iop.Stdin.Close()
+				if err := iop.Stdin.Close(); err != nil {
+					logrus.Error(err)
+				}
 			}()
 		}
 	} else {
@@ -156,7 +174,9 @@ func (daemon *Daemon) AttachStreams(id string, iop libcontainerd.IOPipe) error {
 		if (c != nil && !c.Config.Tty) || (ec != nil && !ec.Tty && runtime.GOOS == "windows") {
 			// tty is enabled, so dont close containerd's iopipe stdin.
 			if iop.Stdin != nil {
-				iop.Stdin.Close()
+				if err := iop.Stdin.Close(); err != nil {
+					logrus.Error(err)
+				}
 			}
 		}
 	}

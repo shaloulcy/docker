@@ -15,3 +15,5 @@ weight=11
 ## TOC
 
 * [How nodes work](nodes.md)
+* [How services work](services.md)
+* [How PKI works](pki.md)

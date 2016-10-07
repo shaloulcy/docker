@@ -23,11 +23,11 @@ import (
 	"github.com/Sirupsen/logrus"
 	containerd "github.com/docker/containerd/api/grpc/types"
 	"github.com/docker/docker/api"
+	"github.com/docker/docker/api/types"
+	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/events"
 	"github.com/docker/docker/daemon/exec"
-	"github.com/docker/engine-api/types"
-	containertypes "github.com/docker/engine-api/types/container"
 	"github.com/docker/libnetwork/cluster"
 	// register graph drivers
 	_ "github.com/docker/docker/daemon/graphdriver/register"
@@ -47,6 +47,8 @@ import (
 	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/pkg/system"
 	"github.com/docker/docker/pkg/truncindex"
+	plugingetter "github.com/docker/docker/plugin/getter"
+	pluginstore "github.com/docker/docker/plugin/store"
 	"github.com/docker/docker/reference"
 	"github.com/docker/docker/registry"
 	"github.com/docker/docker/runconfig"
@@ -94,6 +96,7 @@ type Daemon struct {
 	gidMaps                   []idtools.IDMap
 	layerStore                layer.Store
 	imageStore                image.Store
+	pluginStore               *pluginstore.Store
 	nameIndex                 *registrar.Registrar
 	linkIndex                 *linkIndex
 	containerd                libcontainerd.Client
@@ -147,6 +150,7 @@ func (daemon *Daemon) restore() error {
 	}
 
 	var migrateLegacyLinks bool
+	removeContainers := make(map[string]*container.Container)
 	restartContainers := make(map[*container.Container]chan struct{})
 	activeSandboxes := make(map[string]interface{})
 	for _, c := range containers {
@@ -157,6 +161,12 @@ func (daemon *Daemon) restore() error {
 		if err := daemon.Register(c); err != nil {
 			logrus.Errorf("Failed to register container %s: %s", c.ID, err)
 			continue
+		}
+
+		// verify that all volumes valid and have been migrated from the pre-1.7 layout
+		if err := daemon.verifyVolumesInfo(c); err != nil {
+			// don't skip the container due to error
+			logrus.Errorf("Failed to verify volumes for container '%s': %v", c.ID, err)
 		}
 
 		// The LogConfig.Type is empty if the container was created before docker 1.12 with default log driver.
@@ -175,6 +185,10 @@ func (daemon *Daemon) restore() error {
 		wg.Add(1)
 		go func(c *container.Container) {
 			defer wg.Done()
+			if err := backportMountSpec(c); err != nil {
+				logrus.Errorf("Failed to migrate old mounts to use new spec format")
+			}
+
 			rm := c.RestartManager(false)
 			if c.IsRunning() || c.IsPaused() {
 				if err := daemon.containerd.Restore(c.ID, libcontainerd.WithRestartManager(rm)); err != nil {
@@ -194,10 +208,22 @@ func (daemon *Daemon) restore() error {
 			}
 			// fixme: only if not running
 			// get list of containers we need to restart
-			if daemon.configStore.AutoRestart && !c.IsRunning() && !c.IsPaused() && c.ShouldRestart() {
-				mapLock.Lock()
-				restartContainers[c] = make(chan struct{})
-				mapLock.Unlock()
+			if !c.IsRunning() && !c.IsPaused() {
+				// Do not autostart containers which
+				// has endpoints in a swarm scope
+				// network yet since the cluster is
+				// not initialized yet. We will start
+				// it after the cluster is
+				// initialized.
+				if daemon.configStore.AutoRestart && c.ShouldRestart() && !c.NetworkSettings.HasSwarmEndpoint {
+					mapLock.Lock()
+					restartContainers[c] = make(chan struct{})
+					mapLock.Unlock()
+				} else if c.HostConfig != nil && c.HostConfig.AutoRemove {
+					mapLock.Lock()
+					removeContainers[c.ID] = c
+					mapLock.Unlock()
+				}
 			}
 
 			if c.RemovalInProgress {
@@ -274,7 +300,7 @@ func (daemon *Daemon) restore() error {
 
 			// Make sure networks are available before starting
 			daemon.waitForNetworks(c)
-			if err := daemon.containerStart(c); err != nil {
+			if err := daemon.containerStart(c, ""); err != nil {
 				logrus.Errorf("Failed to start container %s: %s", c.ID, err)
 			}
 			close(chNotify)
@@ -282,6 +308,18 @@ func (daemon *Daemon) restore() error {
 
 	}
 	group.Wait()
+
+	removeGroup := sync.WaitGroup{}
+	for id := range removeContainers {
+		removeGroup.Add(1)
+		go func(cid string) {
+			if err := daemon.ContainerRm(cid, &types.ContainerRmConfig{ForceRemove: true, RemoveVolume: true}); err != nil {
+				logrus.Errorf("Failed to remove container %s: %s", cid, err)
+			}
+			removeGroup.Done()
+		}(id)
+	}
+	removeGroup.Wait()
 
 	// any containers that were started above would already have had this done,
 	// however we need to now prepare the mountpoints for the rest of the containers as well.
@@ -295,7 +333,11 @@ func (daemon *Daemon) restore() error {
 		// has a volume and the volume dirver is not available.
 		if _, ok := restartContainers[c]; ok {
 			continue
+		} else if _, ok := removeContainers[c.ID]; ok {
+			// container is automatically removed, skip it.
+			continue
 		}
+
 		group.Add(1)
 		go func(c *container.Container) {
 			defer group.Done()
@@ -315,6 +357,30 @@ func (daemon *Daemon) restore() error {
 	}
 
 	return nil
+}
+
+// RestartSwarmContainers restarts any autostart container which has a
+// swarm endpoint.
+func (daemon *Daemon) RestartSwarmContainers() {
+	group := sync.WaitGroup{}
+	for _, c := range daemon.List() {
+		if !c.IsRunning() && !c.IsPaused() {
+			// Autostart all the containers which has a
+			// swarm endpoint now that the cluster is
+			// initialized.
+			if daemon.configStore.AutoRestart && c.ShouldRestart() && c.NetworkSettings.HasSwarmEndpoint {
+				group.Add(1)
+				go func(c *container.Container) {
+					defer group.Done()
+					if err := daemon.containerStart(c, ""); err != nil {
+						logrus.Error(err)
+					}
+				}(c)
+			}
+		}
+
+	}
+	group.Wait()
 }
 
 // waitForNetworks is used during daemon initialization when starting up containers
@@ -485,6 +551,9 @@ func NewDaemon(config *Config, registryService registry.Service, containerdRemot
 	if driverName == "" {
 		driverName = config.GraphDriver
 	}
+
+	d.pluginStore = pluginstore.NewStore(config.Root)
+
 	d.layerStore, err = layer.NewStoreFromOptions(layer.StoreOptions{
 		StorePath:                 config.Root,
 		MetadataStorePathTemplate: filepath.Join(config.Root, "image", "%s", "layerdb"),
@@ -492,6 +561,7 @@ func NewDaemon(config *Config, registryService registry.Service, containerdRemot
 		GraphDriverOptions:        config.GraphOptions,
 		UIDMaps:                   uidMaps,
 		GIDMaps:                   gidMaps,
+		PluginGetter:              d.pluginStore,
 	})
 	if err != nil {
 		return nil, err
@@ -600,11 +670,12 @@ func NewDaemon(config *Config, registryService registry.Service, containerdRemot
 		return nil, err
 	}
 
-	if err := d.restore(); err != nil {
+	// Plugin system initialization should happen before restore. Do not change order.
+	if err := pluginInit(d, config, containerdRemote); err != nil {
 		return nil, err
 	}
 
-	if err := pluginInit(d, config, containerdRemote); err != nil {
+	if err := d.restore(); err != nil {
 		return nil, err
 	}
 
@@ -656,8 +727,6 @@ func (daemon *Daemon) Shutdown() error {
 	// Keep mounts and networking running on daemon shutdown if
 	// we are to keep containers running and restore them.
 
-	pluginShutdown()
-
 	if daemon.configStore.LiveRestoreEnabled && daemon.containers != nil {
 		// check if there are any running containers, if none we should do some cleanup
 		if ls, err := daemon.Containers(&types.ContainerListOptions{}); len(ls) != 0 || err != nil {
@@ -682,6 +751,9 @@ func (daemon *Daemon) Shutdown() error {
 			logrus.Debugf("container stopped %s", c.ID)
 		})
 	}
+
+	// Shutdown plugins after containers. Dont change the order.
+	pluginShutdown()
 
 	// trigger libnetwork Stop only if it's initialized
 	if daemon.netController != nil {
@@ -846,6 +918,8 @@ func (daemon *Daemon) configureVolumes(rootUID, rootGID int) (*store.VolumeStore
 	if err != nil {
 		return nil, err
 	}
+
+	volumedrivers.RegisterPluginGetter(daemon.pluginStore)
 
 	if !volumedrivers.Register(volumesDriver, volumesDriver.Name()) {
 		return nil, fmt.Errorf("local volume driver could not be registered")
@@ -1023,9 +1097,9 @@ func (daemon *Daemon) reloadClusterDiscovery(config *Config) error {
 	if daemon.netController == nil {
 		return nil
 	}
-	netOptions, err := daemon.networkOptions(daemon.configStore, nil)
+	netOptions, err := daemon.networkOptions(daemon.configStore, daemon.pluginStore, nil)
 	if err != nil {
-		logrus.Warnf("Failed to reload configuration with network controller: %v", err)
+		logrus.WithError(err).Warnf("failed to get options with network controller")
 		return nil
 	}
 	err = daemon.netController.ReloadConfiguration(netOptions...)
@@ -1040,7 +1114,7 @@ func isBridgeNetworkDisabled(config *Config) bool {
 	return config.bridgeConfig.Iface == disableNetworkBridge
 }
 
-func (daemon *Daemon) networkOptions(dconfig *Config, activeSandboxes map[string]interface{}) ([]nwconfig.Option, error) {
+func (daemon *Daemon) networkOptions(dconfig *Config, pg plugingetter.PluginGetter, activeSandboxes map[string]interface{}) ([]nwconfig.Option, error) {
 	options := []nwconfig.Option{}
 	if dconfig == nil {
 		return options, nil
@@ -1079,6 +1153,10 @@ func (daemon *Daemon) networkOptions(dconfig *Config, activeSandboxes map[string
 
 	if daemon.configStore != nil && daemon.configStore.LiveRestoreEnabled && len(activeSandboxes) != 0 {
 		options = append(options, nwconfig.OptionActiveSandboxes(activeSandboxes))
+	}
+
+	if pg != nil {
+		options = append(options, nwconfig.OptionPluginGetter(pg))
 	}
 
 	return options, nil

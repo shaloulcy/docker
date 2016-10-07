@@ -92,9 +92,8 @@ set -e
 			RUN mkdir -p /go/src/github.com/docker && mkdir -p /go/src/github.com/opencontainers
 		EOF
 
-		# get the RUNC and CONTAINERD commit from the root Dockerfile, this keeps the commits in sync
-		awk '$1 == "ENV" && $2 == "RUNC_COMMIT" { print; exit }' Dockerfile >> "$DEST/$version/Dockerfile.build"
-		awk '$1 == "ENV" && $2 == "CONTAINERD_COMMIT" { print; exit }' Dockerfile >> "$DEST/$version/Dockerfile.build"
+		echo "ENV RUNC_COMMIT $(grep "^RUNC_COMMIT" hack/dockerfile/install-binaries.sh | cut -d"=" -f 2)" >> "$DEST/$version/Dockerfile.build"
+		echo "ENV CONTAINERD_COMMIT $(grep "^CONTAINERD_COMMIT" hack/dockerfile/install-binaries.sh | cut -d"=" -f 2)" >> "$DEST/$version/Dockerfile.build"
 
 		# add runc and containerd compile and install
 		cat >> "$DEST/$version/Dockerfile.build" <<-EOF
@@ -135,8 +134,12 @@ set -e
 		# selinux policy referencing systemd things won't work on non-systemd versions
 		# of centos or rhel, which we don't support anyways
 		if [ "${suite%.*}" -gt 6 ] && [[ "$version" != opensuse* ]]; then
+			selinuxDir="selinux"
+			if [ -d "./contrib/selinux-$version" ]; then
+				selinuxDir="selinux-${version}"
+			fi
 			cat >> "$DEST/$version/Dockerfile.build" <<-EOF
-				RUN tar -cz -C /usr/src/${rpmName}/contrib -f /root/rpmbuild/SOURCES/${rpmName}-selinux.tar.gz ${rpmName}-selinux
+				RUN tar -cz -C /usr/src/${rpmName}/contrib/${selinuxDir} -f /root/rpmbuild/SOURCES/${rpmName}-selinux.tar.gz ${rpmName}-selinux
 				RUN rpmbuild -ba \
 						--define '_gitcommit $DOCKER_GITCOMMIT' \
 						--define '_release $rpmRelease' \

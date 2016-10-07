@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/docker/engine-api/types/reference"
+	"github.com/docker/distribution/reference"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/identity"
 	"github.com/docker/swarmkit/manager/scheduler"
@@ -133,9 +133,18 @@ func validateTask(taskSpec api.TaskSpec) error {
 		return grpc.Errorf(codes.InvalidArgument, "ContainerSpec: image reference must be provided")
 	}
 
-	if _, _, err := reference.Parse(container.Image); err != nil {
+	if _, err := reference.ParseNamed(container.Image); err != nil {
 		return grpc.Errorf(codes.InvalidArgument, "ContainerSpec: %q is not a valid repository/tag", container.Image)
 	}
+
+	mountMap := make(map[string]bool)
+	for _, mount := range container.Mounts {
+		if _, exists := mountMap[mount.Target]; exists {
+			return grpc.Errorf(codes.InvalidArgument, "ContainerSpec: duplicate mount point: %s", mount.Target)
+		}
+		mountMap[mount.Target] = true
+	}
+
 	return nil
 }
 
@@ -149,13 +158,13 @@ func validateEndpointSpec(epSpec *api.EndpointSpec) error {
 		return grpc.Errorf(codes.InvalidArgument, "EndpointSpec: ports can't be used with dnsrr mode")
 	}
 
-	portSet := make(map[api.PortConfig]struct{})
+	portSet := make(map[uint32]struct{})
 	for _, port := range epSpec.Ports {
-		if _, ok := portSet[*port]; ok {
-			return grpc.Errorf(codes.InvalidArgument, "EndpointSpec: duplicate ports provided")
+		if _, ok := portSet[port.PublishedPort]; ok {
+			return grpc.Errorf(codes.InvalidArgument, "EndpointSpec: duplicate published ports provided")
 		}
 
-		portSet[*port] = struct{}{}
+		portSet[port.PublishedPort] = struct{}{}
 	}
 
 	return nil
@@ -182,7 +191,10 @@ func validateServiceSpec(spec *api.ServiceSpec) error {
 
 // checkPortConflicts does a best effort to find if the passed in spec has port
 // conflicts with existing services.
-func (s *Server) checkPortConflicts(spec *api.ServiceSpec) error {
+// `serviceID string` is the service ID of the spec in service update. If
+// `serviceID` is not "", then conflicts check will be skipped against this
+// service (the service being updated).
+func (s *Server) checkPortConflicts(spec *api.ServiceSpec, serviceID string) error {
 	if spec.Endpoint == nil {
 		return nil
 	}
@@ -215,17 +227,21 @@ func (s *Server) checkPortConflicts(spec *api.ServiceSpec) error {
 	}
 
 	for _, service := range services {
+		// If service ID is the same (and not "") then this is an update
+		if serviceID != "" && serviceID == service.ID {
+			continue
+		}
 		if service.Spec.Endpoint != nil {
 			for _, pc := range service.Spec.Endpoint.Ports {
 				if reqPorts[pcToString(pc)] {
-					return grpc.Errorf(codes.InvalidArgument, "port '%d' is already in use by service %s", pc.PublishedPort, service.ID)
+					return grpc.Errorf(codes.InvalidArgument, "port '%d' is already in use by service '%s' (%s)", pc.PublishedPort, service.Spec.Annotations.Name, service.ID)
 				}
 			}
 		}
 		if service.Endpoint != nil {
 			for _, pc := range service.Endpoint.Ports {
 				if reqPorts[pcToString(pc)] {
-					return grpc.Errorf(codes.InvalidArgument, "port '%d' is already in use by service %s", pc.PublishedPort, service.ID)
+					return grpc.Errorf(codes.InvalidArgument, "port '%d' is already in use by service '%s' (%s)", pc.PublishedPort, service.Spec.Annotations.Name, service.ID)
 				}
 			}
 		}
@@ -243,7 +259,7 @@ func (s *Server) CreateService(ctx context.Context, request *api.CreateServiceRe
 		return nil, err
 	}
 
-	if err := s.checkPortConflicts(request.Spec); err != nil {
+	if err := s.checkPortConflicts(request.Spec, ""); err != nil {
 		return nil, err
 	}
 
@@ -309,7 +325,7 @@ func (s *Server) UpdateService(ctx context.Context, request *api.UpdateServiceRe
 	}
 
 	if request.Spec.Endpoint != nil && !reflect.DeepEqual(request.Spec.Endpoint, service.Spec.Endpoint) {
-		if err := s.checkPortConflicts(request.Spec); err != nil {
+		if err := s.checkPortConflicts(request.Spec, request.ServiceID); err != nil {
 			return nil, err
 		}
 	}
@@ -320,17 +336,28 @@ func (s *Server) UpdateService(ctx context.Context, request *api.UpdateServiceRe
 			return nil
 		}
 		// temporary disable network update
-		if request.Spec != nil && !reflect.DeepEqual(request.Spec.Networks, service.Spec.Networks) {
+		requestSpecNetworks := request.Spec.Task.Networks
+		if len(requestSpecNetworks) == 0 {
+			requestSpecNetworks = request.Spec.Networks
+		}
+
+		specNetworks := service.Spec.Task.Networks
+		if len(specNetworks) == 0 {
+			specNetworks = service.Spec.Networks
+		}
+
+		if !reflect.DeepEqual(requestSpecNetworks, specNetworks) {
 			return errNetworkUpdateNotSupported
 		}
 
 		// orchestrator is designed to be stateless, so it should not deal
 		// with service mode change (comparing current config with previous config).
 		// proper way to change service mode is to delete and re-add.
-		if request.Spec != nil && reflect.TypeOf(service.Spec.Mode) != reflect.TypeOf(request.Spec.Mode) {
+		if reflect.TypeOf(service.Spec.Mode) != reflect.TypeOf(request.Spec.Mode) {
 			return errModeChangeNotAllowed
 		}
 		service.Meta.Version = *request.ServiceVersion
+		service.PreviousSpec = service.Spec.Copy()
 		service.Spec = *request.Spec.Copy()
 
 		// Reset update status

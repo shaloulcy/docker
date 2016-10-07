@@ -226,9 +226,12 @@ List containers
         sizes
 -   **filters** - a JSON encoded value of the filters (a `map[string][]string`) to process on the containers list. Available filters:
   -   `exited=<int>`; -- containers with exit code of  `<int>` ;
-  -   `status=`(`created`|`restarting`|`running`|`paused`|`exited`|`dead`)
+  -   `status=`(`created`|`restarting`|`running`|`removing`|`paused`|`exited`|`dead`)
   -   `label=key` or `label="key=value"` of a container label
   -   `isolation=`(`default`|`process`|`hyperv`)   (Windows daemon only)
+      `id=<ID>` a container's ID
+      `name=<name>` a container's name
+      `is-task=`(`true`|`false`)
   -   `ancestor`=(`<image-name>[:<tag>]`,  `<image id>` or `<image@digest>`)
   -   `before`=(`<container id>` or `<container name>`)
   -   `since`=(`<container id>` or `<container name>`)
@@ -299,8 +302,8 @@ Create a container
              "CpuQuota": 50000,
              "CpusetCpus": "0,1",
              "CpusetMems": "0,1",
-             "MaximumIOps": 0,
-             "MaximumIOBps": 0,
+             "IOMaximumBandwidth": 0,
+             "IOMaximumIOps": 0,
              "BlkioWeight": 300,
              "BlkioWeightDevice": [{}],
              "BlkioDeviceReadBps": [{}],
@@ -325,15 +328,18 @@ Create a container
              "CapDrop": ["MKNOD"],
              "GroupAdd": ["newgroup"],
              "RestartPolicy": { "Name": "", "MaximumRetryCount": 0 },
+             "AutoRemove": true,
              "NetworkMode": "bridge",
              "Devices": [],
+             "Sysctls": { "net.ipv4.ip_forward": "1" },
              "Ulimits": [{}],
              "LogConfig": { "Type": "json-file", "Config": {} },
              "SecurityOpt": [],
              "StorageOpt": {},
              "CgroupParent": "",
              "VolumeDriver": "",
-             "ShmSize": 67108864
+             "ShmSize": 67108864,
+             "Mounts": []
           },
           "NetworkingConfig": {
               "EndpointsConfig": {
@@ -371,7 +377,7 @@ Create a container
 -   **AttachStdout** - Boolean value, attaches to `stdout`.
 -   **AttachStderr** - Boolean value, attaches to `stderr`.
 -   **Tty** - Boolean value, Attach standard streams to a `tty`, including `stdin` if it is not closed.
--   **OpenStdin** - Boolean value, opens stdin,
+-   **OpenStdin** - Boolean value, opens `stdin`,
 -   **StdinOnce** - Boolean value, close `stdin` after the 1 attached client disconnects.
 -   **Env** - A list of environment variables in the form of `["VAR=value"[,"VAR2=value2"]]`
 -   **Labels** - Adds a map of labels to a container. To specify a map: `{"key":"value"[,"key2":"value2"]}`
@@ -392,10 +398,17 @@ Create a container
 -   **StopSignal** - Signal to stop a container as a string or unsigned integer. `SIGTERM` by default.
 -   **HostConfig**
     -   **Binds** – A list of volume bindings for this container. Each volume binding is a string in one of these forms:
-           + `host_path:container_path` to bind-mount a host path into the container
-           + `host_path:container_path:ro` to make the bind-mount read-only inside the container.
-           + `volume_name:container_path` to bind-mount a volume managed by a volume plugin into the container.
-           + `volume_name:container_path:ro` to make the bind mount read-only inside the container.
+           + `host-src:container-dest` to bind-mount a host path into the
+             container. Both `host-src`, and `container-dest` must be an
+             _absolute_ path.
+           + `host-src:container-dest:ro` to make the bind-mount read-only
+             inside the container. Both `host-src`, and `container-dest` must be
+             an _absolute_ path.
+           + `volume-name:container-dest` to bind-mount a volume managed by a
+             volume driver into the container. `container-dest` must be an
+             _absolute_ path.
+           + `volume-name:container-dest:ro` to mount the volume read-only
+             inside the container.  `container-dest` must be an _absolute_ path.
     -   **Links** - A list of links for the container. Each link entry should be
           in the form of `container_name:alias`.
     -   **Memory** - Memory limit in bytes.
@@ -410,8 +423,8 @@ Create a container
     -   **CpuQuota** - Microseconds of CPU time that the container can get in a CPU period.
     -   **CpusetCpus** - String value containing the `cgroups CpusetCpus` to use.
     -   **CpusetMems** - Memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
-    -   **MaximumIOps** - Maximum IO absolute rate in terms of IOps.
-    -   **MaximumIOBps** - Maximum IO absolute rate in terms of bytes per second.
+    -   **IOMaximumBandwidth** - Maximum IO absolute rate in terms of IOps.
+    -   **IOMaximumIOps** - Maximum IO absolute rate in terms of bytes per second.
     -   **BlkioWeight** - Block IO weight (relative weight) accepts a weight value between 10 and 1000.
     -   **BlkioWeightDevice** - Block IO weight (relative device weight) in the form of:        `"BlkioWeightDevice": [{"Path": "device_path", "Weight": weight}]`
     -   **BlkioDeviceReadBps** - Limit read rate (bytes per second) from a device in the form of:	`"BlkioDeviceReadBps": [{"Path": "device_path", "Rate": rate}]`, for example:
@@ -458,6 +471,8 @@ Create a container
             The default is not to restart. (optional)
             An ever increasing delay (double the previous delay, starting at 100mS)
             is added before each restart to prevent flooding the server.
+    -   **AutoRemove** - Boolean value, set to `true` to automatically remove the container on daemon side
+            when the container's process exits. Note that `RestartPolicy` other than `none` is exclusive to `AutoRemove`.
     -   **UsernsMode**  - Sets the usernamespace mode for the container when usernamespace remapping option is enabled.
            supported values are: `host`.
     -   **NetworkMode** - Sets the networking mode for the container. Supported
@@ -483,6 +498,24 @@ Create a container
     -   **CgroupParent** - Path to `cgroups` under which the container's `cgroup` is created. If the path is not absolute, the path is considered to be relative to the `cgroups` path of the init process. Cgroups are created if they do not already exist.
     -   **VolumeDriver** - Driver that this container users to mount volumes.
     -   **ShmSize** - Size of `/dev/shm` in bytes. The size must be greater than 0.  If omitted the system uses 64MB.
+    -   **Mounts** – Specification for mounts to be added to the container.
+        - **Target** – Container path.
+        - **Source** – Mount source (e.g. a volume name, a host path).
+        - **Type** – The mount type (`bind`, or `volume`).
+          Available types (for the `Type` field):
+          - **bind** - Mounts a file or directory from the host into the container. Must exist prior to creating the container.
+          - **volume** - Creates a volume with the given name and options (or uses a pre-existing volume with the same name and options). These are **not** removed when the container is removed.
+        - **ReadOnly** – A boolean indicating whether the mount should be read-only.
+        - **BindOptions** - Optional configuration for the `bind` type.
+          - **Propagation** – A propagation mode with the value `[r]private`, `[r]shared`, or `[r]slave`.
+        - **VolumeOptions** – Optional configuration for the `volume` type.
+            - **NoCopy** – A boolean indicating if volume should be
+              populated with the data from the target. (Default false)
+            - **Labels** – User-defined name and labels for the volume as key/value pairs: `{"name": "value"}`
+            - **DriverConfig** – Map of driver-specific options.
+              - **Name** - Name of the driver to use to create the volume.
+              - **Options** - key/value map of driver specific options.
+
 
 **Query parameters**:
 
@@ -513,7 +546,7 @@ Return low-level information on the container `id`
     HTTP/1.1 200 OK
     Content-Type: application/json
 
-    {
+	{
 		"AppArmorProfile": "",
 		"Args": [
 			"-c",
@@ -559,8 +592,8 @@ Return low-level information on the container `id`
 		"ExecIDs": null,
 		"HostConfig": {
 			"Binds": null,
-			"MaximumIOps": 0,
-			"MaximumIOBps": 0,
+			"IOMaximumBandwidth": 0,
+			"IOMaximumIOps": 0,
 			"BlkioWeight": 0,
 			"BlkioWeightDevice": [{}],
 			"BlkioDeviceReadBps": [{}],
@@ -599,6 +632,7 @@ Return low-level information on the container `id`
 				"MaximumRetryCount": 2,
 				"Name": "on-failure"
 			},
+			"AutoRemove": true,
 			"LogConfig": {
 				"Config": null,
 				"Type": "json-file"
@@ -611,7 +645,8 @@ Return low-level information on the container `id`
 			"VolumesFrom": null,
 			"Ulimits": [{}],
 			"VolumeDriver": "",
-			"ShmSize": 67108864
+			"ShmSize": 67108864,
+			"Mounts": []
 		},
 		"HostnamePath": "/var/lib/docker/containers/ba033ac4401106a3b513bc9d639eee123ad78ca3616b921167cd74b20e25ed39/hostname",
 		"HostsPath": "/var/lib/docker/containers/ba033ac4401106a3b513bc9d639eee123ad78ca3616b921167cd74b20e25ed39/hosts",
@@ -1282,43 +1317,43 @@ Attach to the container `id`
 -   **409** - container is paused
 -   **500** – server error
 
-    **Stream details**:
+**Stream details**:
 
-    When using the TTY setting is enabled in
-    [`POST /containers/create`
-    ](#create-a-container),
-    the stream is the raw data from the process PTY and client's `stdin`.
-    When the TTY is disabled, then the stream is multiplexed to separate
-    `stdout` and `stderr`.
+When using the TTY setting is enabled in
+[`POST /containers/create`
+](#create-a-container),
+the stream is the raw data from the process PTY and client's `stdin`.
+When the TTY is disabled, then the stream is multiplexed to separate
+`stdout` and `stderr`.
 
-    The format is a **Header** and a **Payload** (frame).
+The format is a **Header** and a **Payload** (frame).
 
-    **HEADER**
+**HEADER**
 
-    The header contains the information which the stream writes (`stdout` or
-    `stderr`). It also contains the size of the associated frame encoded in the
-    last four bytes (`uint32`).
+The header contains the information which the stream writes (`stdout` or
+`stderr`). It also contains the size of the associated frame encoded in the
+last four bytes (`uint32`).
 
-    It is encoded on the first eight bytes like this:
+It is encoded on the first eight bytes like this:
 
-        header := [8]byte{STREAM_TYPE, 0, 0, 0, SIZE1, SIZE2, SIZE3, SIZE4}
+    header := [8]byte{STREAM_TYPE, 0, 0, 0, SIZE1, SIZE2, SIZE3, SIZE4}
 
-    `STREAM_TYPE` can be:
+`STREAM_TYPE` can be:
 
 -   0: `stdin` (is written on `stdout`)
 -   1: `stdout`
 -   2: `stderr`
 
-    `SIZE1, SIZE2, SIZE3, SIZE4` are the four bytes of
-    the `uint32` size encoded as big endian.
+`SIZE1, SIZE2, SIZE3, SIZE4` are the four bytes of
+the `uint32` size encoded as big endian.
 
-    **PAYLOAD**
+**PAYLOAD**
 
-    The payload is the raw stream.
+The payload is the raw stream.
 
-    **IMPLEMENTATION**
+**IMPLEMENTATION**
 
-    The simplest way to implement the Attach protocol is the following:
+The simplest way to implement the Attach protocol is the following:
 
     1.  Read eight bytes.
     2.  Choose `stdout` or `stderr` depending on the first byte.
@@ -1532,6 +1567,38 @@ Upload a tar archive to be extracted to a path in the filesystem of container
     - no such file or directory (**path** resource does not exist)
 - **500** – server error
 
+
+### Prune stopped containers
+
+`POST /containers/prune`
+
+Delete stopped containers
+
+**Example request**:
+
+    POST /containers/prune HTTP/1.1
+    Content-Type: application/json
+
+    {
+    }
+
+**Example response**:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+
+    {
+        "ContainersDeleted": [
+            "e575172ed11dc01bfce087fb27bee502db149e1a0fad7c296ad300bbff178148"
+        ],
+        "SpaceReclaimed": 109
+    }
+
+**Status codes**:
+
+-   **200** – no error
+-   **500** – server error
+
 ## 3.2 Images
 
 ### List Images
@@ -1660,21 +1727,30 @@ The archive may include any number of other files,
 which are accessible in the build context (See the [*ADD build
 command*](../../reference/builder.md#add)).
 
+The Docker daemon performs a preliminary validation of the `Dockerfile` before
+starting the build, and returns an error if the syntax is incorrect. After that,
+each instruction is run one-by-one until the ID of the new image is output.
+
 The build is canceled if the client drops the connection by quitting
 or being killed.
 
 **Query parameters**:
 
--   **dockerfile** - Path within the build context to the Dockerfile. This is
-        ignored if `remote` is specified and points to an individual filename.
+-   **dockerfile** - Path within the build context to the `Dockerfile`. This is
+        ignored if `remote` is specified and points to an external `Dockerfile`.
 -   **t** – A name and optional tag to apply to the image in the `name:tag` format.
         If you omit the `tag` the default `latest` value is assumed.
         You can provide one or more `t` parameters.
--   **remote** – A Git repository URI or HTTP/HTTPS URI build source. If the
-        URI specifies a filename, the file's contents are placed into a file
-        called `Dockerfile`.
+-   **remote** – A Git repository URI or HTTP/HTTPS context URI. If the
+        URI points to a single text file, the file's contents are placed into
+        a file called `Dockerfile` and the image is built from that file. If
+        the URI points to a tarball, the file is downloaded by the daemon and
+        the contents therein used as the context for the build. If the URI
+        points to a tarball and the `dockerfile` parameter is also specified,
+        there must be a file with the corresponding path inside the tarball.
 -   **q** – Suppress verbose build output.
 -   **nocache** – Do not use the cache when building the image.
+-   **cachefrom** - JSON array of images used for build cache resolution.
 -   **pull** - Attempt to pull the image even if an older image exists locally.
 -   **rm** - Remove intermediate containers after a successful build (default behavior).
 -   **forcerm** - Always remove intermediate containers (includes `rm`).
@@ -1692,7 +1768,7 @@ or being killed.
 -   **shmsize** - Size of `/dev/shm` in bytes. The size must be greater than 0.  If omitted the system uses 64MB.
 -   **labels** – JSON map of string pairs for labels to set on the image.
 
-    Request Headers:
+**Request Headers**:
 
 -   **Content-type** – Set to `"application/tar"`.
 -   **X-Registry-Config** – A base64-url-safe-encoded Registry Auth Config JSON
@@ -1731,16 +1807,25 @@ Create an image either by pulling it from the registry or by importing it
 
 **Example request**:
 
-    POST /images/create?fromImage=ubuntu HTTP/1.1
+    POST /images/create?fromImage=busybox&tag=latest HTTP/1.1
 
 **Example response**:
 
     HTTP/1.1 200 OK
     Content-Type: application/json
 
-    {"status": "Pulling..."}
-    {"status": "Pulling", "progress": "1 B/ 100 B", "progressDetail": {"current": 1, "total": 100}}
-    {"error": "Invalid..."}
+    {"status":"Pulling from library/busybox","id":"latest"}
+    {"status":"Pulling fs layer","progressDetail":{},"id":"8ddc19f16526"}
+    {"status":"Downloading","progressDetail":{"current":15881,"total":667590},"progress":"[=\u003e                                                 ] 15.88 kB/667.6 kB","id":"8ddc19f16526"}
+    {"status":"Downloading","progressDetail":{"current":556269,"total":667590},"progress":"[=========================================\u003e         ] 556.3 kB/667.6 kB","id":"8ddc19f16526"}
+    {"status":"Download complete","progressDetail":{},"id":"8ddc19f16526"}
+    {"status":"Extracting","progressDetail":{"current":32768,"total":667590},"progress":"[==\u003e                                                ] 32.77 kB/667.6 kB","id":"8ddc19f16526"}
+    {"status":"Extracting","progressDetail":{"current":491520,"total":667590},"progress":"[====================================\u003e              ] 491.5 kB/667.6 kB","id":"8ddc19f16526"}
+    {"status":"Extracting","progressDetail":{"current":667590,"total":667590},"progress":"[==================================================\u003e] 667.6 kB/667.6 kB","id":"8ddc19f16526"}
+    {"status":"Extracting","progressDetail":{"current":667590,"total":667590},"progress":"[==================================================\u003e] 667.6 kB/667.6 kB","id":"8ddc19f16526"}
+    {"status":"Pull complete","progressDetail":{},"id":"8ddc19f16526"}
+    {"status":"Digest: sha256:a59906e33509d14c036c8678d687bd4eec81ed7c4b8ce907b888c607f6a1e0e6"}
+    {"status":"Status: Downloaded newer image for busybox:latest"}
     ...
 
 When using this endpoint to pull an image from the registry, the
@@ -1758,9 +1843,10 @@ a base64-encoded AuthConfig object.
 -   **repo** – Repository name given to an image when it is imported.
         The repo may include a tag. This parameter may only be used when importing
         an image.
--   **tag** – Tag or digest.
+-   **tag** – Tag or digest. If empty when pulling an image, this causes all tags
+        for the given image to be pulled.
 
-    Request Headers:
+**Request Headers**:
 
 -   **X-Registry-Auth** – base64-encoded AuthConfig object, containing either login information, or a token
     - Credential based login:
@@ -1995,7 +2081,7 @@ The push is cancelled if the HTTP connection is closed.
 
 -   **tag** – The tag to associate with the image on the registry. This is optional.
 
-Request Headers:
+**Request Headers**:
 
 -   **X-Registry-Auth** – base64-encoded AuthConfig object, containing either login information, or a token
     - Credential based login:
@@ -2140,6 +2226,54 @@ Search for an image on [Docker Hub](https://hub.docker.com).
 -   **200** – no error
 -   **500** – server error
 
+### Prune unused images
+
+`POST /images/prune`
+
+Delete unused images
+
+**Example request**:
+
+    POST /images/prune HTTP/1.1
+    Content-Type: application/json
+
+    {
+        "DanglingOnly": false
+    }
+
+**Example response**:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+
+    {
+        "ImagesDeleted": [
+            {
+                "Untagged": "busybox:latest"
+            },
+            {
+                "Untagged": "busybox@sha256:a59906e33509d14c036c8678d687bd4eec81ed7c4b8ce907b888c607f6a1e0e6"
+            },
+            {
+                "Deleted": "sha256:2b8fd9751c4c0f5dd266fcae00707e67a2545ef34f9a29354585f93dac906749"
+            },
+            {
+                "Deleted": "sha256:8ac8bfaff55af948c796026ee867448c5b5b5d9dd3549f4006d9759b25d4a893"
+            }
+        ],
+        "SpaceReclaimed": 1092588
+    }
+
+**JSON parameters**:
+
+- **DanglingOnly**: if `true` only delete unused *and* untagged images. Default to `false` if omitted
+
+**Status codes**:
+
+-   **200** – no error
+-   **500** – server error
+
+
 ## 3.3 Misc
 
 ### Check auth configuration
@@ -2185,7 +2319,7 @@ Display system-wide information
 
     GET /info HTTP/1.1
 
-**Example response**:
+**Example response (Linux)**:
 
     HTTP/1.1 200 OK
     Content-Type: application/json
@@ -2261,6 +2395,198 @@ Display system-wide information
         "SwapLimit": false,
         "SystemStatus": [["State", "Healthy"]],
         "SystemTime": "2015-03-10T11:11:23.730591467-07:00"
+    }
+
+
+**Example response (Windows)**:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+
+    {
+        "ID": "NYMS:B5VK:UMSL:FVDZ:EWB5:FKVK:LPFL:FJMQ:H6FT:BZJ6:L2TD:XH62",
+        "Containers": 1,
+        "ContainersRunning": 0,
+        "ContainersPaused": 0,
+        "ContainersStopped": 1,
+        "Images": 17,
+        "Driver": "windowsfilter",
+        "DriverStatus": [
+            ["Windows", ""]
+        ],
+        "SystemStatus": null,
+            "Plugins": {
+                "Volume": ["local"],
+                "Network": ["nat", "null", "overlay"],
+                "Authorization": null
+            },
+        "MemoryLimit": false,
+        "SwapLimit": false,
+        "KernelMemory": false,
+        "CpuCfsPeriod": false,
+        "CpuCfsQuota": false,
+        "CPUShares": false,
+        "CPUSet": false,
+        "IPv4Forwarding": true,
+        "BridgeNfIptables": true,
+        "BridgeNfIp6tables": true,
+        "Debug": false,
+        "NFd": -1,
+        "OomKillDisable": false,
+        "NGoroutines": 11,
+        "SystemTime": "2016-09-23T11:59:58.9843533-07:00",
+        "LoggingDriver": "json-file",
+        "CgroupDriver": "",
+        "NEventsListener": 0,
+        "KernelVersion": "10.0 14393 (14393.206.amd64fre.rs1_release.160912-1937)",
+        "OperatingSystem": "Windows Server 2016 Datacenter",
+        "OSType": "windows",
+        "Architecture": "x86_64",
+        "IndexServerAddress": "https://index.docker.io/v1/",
+        "RegistryConfig": {
+                "InsecureRegistryCIDRs": ["127.0.0.0/8"],
+                "IndexConfigs": {
+                    "docker.io": {
+                        "Name": "docker.io",
+                        "Mirrors": null,
+                        "Secure": true,
+                        "Official": true
+                    }
+                },
+                "Mirrors": null
+        },
+        "NCPU": 8,
+        "MemTotal": 4293828608,
+        "DockerRootDir": "C:\\control",
+        "HttpProxy": "",
+        "HttpsProxy": "",
+        "NoProxy": "",
+        "Name": "WIN-V0V70C0LU5P",
+        "Labels": null,
+        "ExperimentalBuild": false,
+        "ServerVersion": "1.13.0-dev",
+        "ClusterStore": "",
+        "ClusterAdvertise": "",
+        "SecurityOptions": null,
+        "Runtimes": null,
+        "DefaultRuntime": "",
+        "Swarm": {
+            "NodeID": "",
+            "NodeAddr": "",
+            "LocalNodeState": "inactive",
+            "ControlAvailable": false,
+            "Error": "",
+            "RemoteManagers": null,
+            "Nodes": 0,
+            "Managers": 0,
+            "Cluster": {
+                "ID": "",
+                "Version": {},
+                "CreatedAt": "0001-01-01T00:00:00Z",
+                "UpdatedAt": "0001-01-01T00:00:00Z",
+                "Spec": {
+                    "Orchestration": {},
+                    "Raft": {
+                        "ElectionTick": 0,
+                        "HeartbeatTick": 0
+                    },
+                    "Dispatcher": {},
+                    "CAConfig": {},
+                    "TaskDefaults": {}
+                }
+            }
+        },
+        "LiveRestoreEnabled": false,
+        "Isolation": "process"
+    }
+
+**Status codes**:
+
+-   **200** – no error
+-   **500** – server error
+
+### Show docker data usage information
+
+`GET /system/df`
+
+Return docker data usage information
+
+**Example request**:
+
+    GET /system/df HTTP/1.1
+
+**Example response**:
+
+    {
+        "LayersSize": 1092588,
+        "Images": [
+            {
+                "Id": "sha256:2b8fd9751c4c0f5dd266fcae00707e67a2545ef34f9a29354585f93dac906749",
+                "ParentId": "",
+                "RepoTags": [
+                    "busybox:latest"
+                ],
+                "RepoDigests": [
+                    "busybox@sha256:a59906e33509d14c036c8678d687bd4eec81ed7c4b8ce907b888c607f6a1e0e6"
+                ],
+                "Created": 1466724217,
+                "Size": 1092588,
+                "SharedSize": 0,
+                "VirtualSize": 1092588,
+                "Labels": {},
+                "Containers": 1
+            }
+        ],
+        "Containers": [
+            {
+                "Id": "e575172ed11dc01bfce087fb27bee502db149e1a0fad7c296ad300bbff178148",
+                "Names": [
+                    "/top"
+                ],
+                "Image": "busybox",
+                "ImageID": "sha256:2b8fd9751c4c0f5dd266fcae00707e67a2545ef34f9a29354585f93dac906749",
+                "Command": "top",
+                "Created": 1472592424,
+                "Ports": [],
+                "SizeRootFs": 1092588,
+                "Labels": {},
+                "State": "exited",
+                "Status": "Exited (0) 56 minutes ago",
+                "HostConfig": {
+                    "NetworkMode": "default"
+                },
+                "NetworkSettings": {
+                    "Networks": {
+                        "bridge": {
+                            "IPAMConfig": null,
+                            "Links": null,
+                            "Aliases": null,
+                            "NetworkID": "d687bc59335f0e5c9ee8193e5612e8aee000c8c62ea170cfb99c098f95899d92",
+                            "EndpointID": "8ed5115aeaad9abb174f68dcf135b49f11daf597678315231a32ca28441dec6a",
+                            "Gateway": "172.18.0.1",
+                            "IPAddress": "172.18.0.2",
+                            "IPPrefixLen": 16,
+                            "IPv6Gateway": "",
+                            "GlobalIPv6Address": "",
+                            "GlobalIPv6PrefixLen": 0,
+                            "MacAddress": "02:42:ac:12:00:02"
+                        }
+                    }
+                },
+                "Mounts": []
+            }
+        ],
+        "Volumes": [
+                {
+                    "Name": "my-volume",
+                    "Driver": "local",
+                    "Mountpoint": "",
+                    "Labels": null,
+                    "Scope": "",
+                    "Size": 0,
+                    "RefCount": 0
+                }
+        ]
     }
 
 **Status codes**:
@@ -2398,7 +2724,7 @@ Create a new image from a container's changes
 
 `GET /events`
 
-Get container events from docker, either in real time via streaming, or via polling (using since).
+Get container events from docker, in real time via streaming.
 
 Docker containers report the following events:
 
@@ -2428,7 +2754,7 @@ Docker daemon report the following event:
 
     HTTP/1.1 200 OK
     Content-Type: application/json
-    Server: Docker/1.10.0 (linux)
+    Server: Docker/1.11.0 (linux)
     Date: Fri, 29 Apr 2016 15:18:06 GMT
     Transfer-Encoding: chunked
 
@@ -2582,8 +2908,8 @@ Docker daemon report the following event:
 
 **Query parameters**:
 
--   **since** – Timestamp used for polling
--   **until** – Timestamp used for polling
+-   **since** – Timestamp. Show all events created since timestamp and then stream
+-   **until** – Timestamp. Show events created until given timestamp and stop streaming
 -   **filters** – A json encoded value of the filters (a map[string][]string) to process on the event list. Available filters:
   -   `container=<string>`; -- container to filter
   -   `event=<string>`; -- event to filter
@@ -2668,12 +2994,39 @@ See the [image tarball format](#image-tarball-format) for more details.
 **Example request**
 
     POST /images/load
+    Content-Type: application/x-tar
 
     Tarball in body
 
 **Example response**:
 
     HTTP/1.1 200 OK
+    Content-Type: application/json
+    Transfer-Encoding: chunked
+
+    {"status":"Loading layer","progressDetail":{"current":32768,"total":1292800},"progress":"[=                                                 ] 32.77 kB/1.293 MB","id":"8ac8bfaff55a"}
+    {"status":"Loading layer","progressDetail":{"current":65536,"total":1292800},"progress":"[==                                                ] 65.54 kB/1.293 MB","id":"8ac8bfaff55a"}
+    {"status":"Loading layer","progressDetail":{"current":98304,"total":1292800},"progress":"[===                                               ]  98.3 kB/1.293 MB","id":"8ac8bfaff55a"}
+    {"status":"Loading layer","progressDetail":{"current":131072,"total":1292800},"progress":"[=====                                             ] 131.1 kB/1.293 MB","id":"8ac8bfaff55a"}
+    ...
+    {"stream":"Loaded image: busybox:latest\n"}
+
+**Example response**:
+
+If the "quiet" query parameter is set to `true` / `1` (`?quiet=1`), progress 
+details are suppressed, and only a confirmation message is returned once the
+action completes.
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+    Transfer-Encoding: chunked
+
+    {"stream":"Loaded image: busybox:latest\n"}
+
+**Query parameters**:
+
+-   **quiet** – Boolean value, suppress progress details during load. Defaults
+      to `0` / `false` if omitted.
 
 **Status codes**:
 
@@ -2712,16 +3065,16 @@ Sets up an exec instance in a running container `id`
     POST /containers/e90e34656806/exec HTTP/1.1
     Content-Type: application/json
 
-      {
-       "AttachStdin": false,
-       "AttachStdout": true,
-       "AttachStderr": true,
-       "DetachKeys": "ctrl-p,ctrl-q",
-       "Tty": false,
-       "Cmd": [
-                     "date"
-             ]
-      }
+    {
+      "AttachStdin": true,
+      "AttachStdout": true,
+      "AttachStderr": true,
+      "Cmd": ["sh"],
+      "DetachKeys": "ctrl-p,ctrl-q",
+      "Privileged": true,
+      "Tty": true,
+      "User": "123:456"
+    }
 
 **Example response**:
 
@@ -2743,7 +3096,10 @@ Sets up an exec instance in a running container `id`
         where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
 -   **Tty** - Boolean value to allocate a pseudo-TTY.
 -   **Cmd** - Command to run specified as a string or an array of strings.
-
+-   **Privileged** - Boolean value, runs the exec process with extended privileges.
+-   **User** - A string value specifying the user, and optionally, group to run
+        the exec process inside the container. Format is one of: `"user"`,
+        `"user:group"`, `"uid"`, or `"uid:gid"`.
 
 **Status codes**:
 
@@ -2788,8 +3144,9 @@ interactive session with the `exec` command.
 -   **404** – no such exec instance
 -   **409** - container is paused
 
-    **Stream details**:
-    Similar to the stream behavior of `POST /containers/(id or name)/attach` API
+**Stream details**:
+
+Similar to the stream behavior of `POST /containers/(id or name)/attach` API
 
 ### Exec Resize
 
@@ -2834,25 +3191,25 @@ Return low-level information about the `exec` command `id`.
     Content-Type: application/json
 
     {
-        "CanRemove": false,
-        "ContainerID": "b53ee82b53a40c7dca428523e34f741f3abc51d9f297a14ff874bf761b995126",
-        "DetachKeys": "",
-        "ExitCode": 2,
-        "ID": "f33bbfb39f5b142420f4759b2348913bd4a8d1a6d7fd56499cb41a1bb91d7b3b",
-        "OpenStderr": true,
-        "OpenStdin": true,
-        "OpenStdout": true,
-        "ProcessConfig": {
-            "arguments": [
-                "-c",
-                "exit 2"
-            ],
-            "entrypoint": "sh",
-            "privileged": false,
-            "tty": true,
-            "user": "1000"
-        },
-        "Running": false
+      "CanRemove": false,
+      "ContainerID": "b53ee82b53a40c7dca428523e34f741f3abc51d9f297a14ff874bf761b995126",
+      "DetachKeys": "",
+      "ExitCode": 2,
+      "ID": "f33bbfb39f5b142420f4759b2348913bd4a8d1a6d7fd56499cb41a1bb91d7b3b",
+      "OpenStderr": true,
+      "OpenStdin": true,
+      "OpenStdout": true,
+      "ProcessConfig": {
+        "arguments": [
+          "-c",
+          "exit 2"
+        ],
+        "entrypoint": "sh",
+        "privileged": false,
+        "tty": true,
+        "user": "1000"
+      },
+      "Running": false
     }
 
 **Status codes**:
@@ -2881,7 +3238,12 @@ Return low-level information about the `exec` command `id`.
         {
           "Name": "tardis",
           "Driver": "local",
-          "Mountpoint": "/var/lib/docker/volumes/tardis"
+          "Mountpoint": "/var/lib/docker/volumes/tardis",
+          "Labels":{
+            "com.example.some-label": "some-value",
+            "com.example.some-other-label": "some-other-value"
+          },
+          "Scope": "local"
         }
       ],
       "Warnings": []
@@ -2916,6 +3278,7 @@ Create a volume
         "com.example.some-label": "some-value",
         "com.example.some-other-label": "some-other-value"
       },
+      "Driver": "custom"
     }
 
 **Example response**:
@@ -2925,13 +3288,16 @@ Create a volume
 
     {
       "Name": "tardis",
-      "Driver": "local",
+      "Driver": "custom",
       "Mountpoint": "/var/lib/docker/volumes/tardis",
-      "Status": null,
+      "Status": {
+        "hello": "world"
+      },
       "Labels": {
         "com.example.some-label": "some-value",
         "com.example.some-other-label": "some-other-value"
       },
+      "Scope": "local"
     }
 
 **Status codes**:
@@ -2945,7 +3311,12 @@ Create a volume
 - **Driver** - Name of the volume driver to use. Defaults to `local` for the name.
 - **DriverOpts** - A mapping of driver options and values. These options are
     passed directly to the driver and are driver specific.
-- **Labels** - Labels to set on the volume, specified as a map: `{"key":"value" [,"key2":"value2"]}`
+- **Labels** - Labels to set on the volume, specified as a map: `{"key":"value","key2":"value2"}`
+
+**JSON fields in response**:
+
+Refer to the [inspect a volume](#inspect-a-volume) section or details about the
+JSON fields returned in the response.
 
 ### Inspect a volume
 
@@ -2963,13 +3334,17 @@ Return low-level information on the volume `name`
     Content-Type: application/json
 
     {
-        "Name": "tardis",
-        "Driver": "local",
-        "Mountpoint": "/var/lib/docker/volumes/tardis/_data",
-        "Labels": {
-            "com.example.some-label": "some-value",
-            "com.example.some-other-label": "some-other-value"
-        }
+      "Name": "tardis",
+      "Driver": "custom",
+      "Mountpoint": "/var/lib/docker/volumes/tardis/_data",
+      "Status": {
+        "hello": "world"
+      },
+      "Labels": {
+          "com.example.some-label": "some-value",
+          "com.example.some-other-label": "some-other-value"
+      },
+      "Scope": "local"
     }
 
 **Status codes**:
@@ -2977,6 +3352,23 @@ Return low-level information on the volume `name`
 -   **200** - no error
 -   **404** - no such volume
 -   **500** - server error
+
+**JSON fields in response**:
+
+The following fields can be returned in the API response. Empty fields, or
+fields that are not supported by the volume's driver may be omitted in the
+response.
+
+- **Name** - Name of the volume.
+- **Driver** - Name of the volume driver used by the volume.
+- **Mountpoint** - Mount path of the volume on the host.
+- **Status** - Low-level details about the volume, provided by the volume driver.
+    Details are returned as a map with key/value pairs: `{"key":"value","key2":"value2"}`.
+    The `Status` field is optional, and is omitted if the volume driver does not
+    support this feature.
+- **Labels** - Labels set on the volume, specified as a map: `{"key":"value","key2":"value2"}`.
+- **Scope** - Scope describes the level at which the volume exists, can be one of
+    `global` for cluster-wide or `local` for machine level. The default is `local`.
 
 ### Remove a volume
 
@@ -2992,12 +3384,49 @@ Instruct the driver to remove the volume (`name`).
 
     HTTP/1.1 204 No Content
 
+**Query Parameters**:
+
+-   **force** - 1/True/true or 0/False/false, Force the removal of the volume.
+        Default `false`.
+
 **Status codes**:
 
 -   **204** - no error
 -   **404** - no such volume or volume driver
 -   **409** - volume is in use and cannot be removed
 -   **500** - server error
+
+### Prune unused volumes
+
+`POST /volumes/prune`
+
+Delete unused volumes
+
+**Example request**:
+
+    POST /volumes/prune HTTP/1.1
+    Content-Type: application/json
+
+    {
+    }
+
+**Example response**:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+
+    {
+        "VolumesDeleted": [
+            "my-volume"
+        ],
+        "SpaceReclaimed": 42
+    }
+
+**Status codes**:
+
+-   **200** – no error
+-   **500** – server error
+
 
 ## 3.5 Networks
 
@@ -3118,7 +3547,7 @@ Content-Type: application/json
     "Config": [
       {
         "Subnet": "172.19.0.0/16",
-        "Gateway": "172.19.0.1/16"
+        "Gateway": "172.19.0.1"
       }
     ],
     "Options": {
@@ -3174,18 +3603,18 @@ Content-Type: application/json
   "EnableIPv6": true,
   "IPAM":{
     "Config":[
-       {
-          "Subnet":"172.20.0.0/16",
-          "IPRange":"172.20.10.0/24",
-          "Gateway":"172.20.10.11"
-        },
-        {
-          "Subnet":"2001:db8:abcd::/64",
-          "Gateway":"2001:db8:abcd::1011"
-        }
+      {
+        "Subnet":"172.20.0.0/16",
+        "IPRange":"172.20.10.0/24",
+        "Gateway":"172.20.10.11"
+      },
+      {
+        "Subnet":"2001:db8:abcd::/64",
+        "Gateway":"2001:db8:abcd::1011"
+      }
     ],
     "Options": {
-        "foo": "bar"
+      "foo": "bar"
     }
   },
   "Internal":true,
@@ -3325,7 +3754,463 @@ Instruct the driver to remove the network (`id`).
 -   **404** - no such network
 -   **500** - server error
 
-## 3.6 Nodes
+## 3.6 Plugins
+
+### List plugins
+
+`GET /plugins`
+
+Returns information about installed plugins.
+
+**Example request**:
+
+    GET /plugins HTTP/1.1
+
+**Example response**:
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "Id": "5724e2c8652da337ab2eedd19fc6fc0ec908e4bd907c7421bf6a8dfc70c4c078",
+    "Name": "tiborvass/no-remove",
+    "Tag": "latest",
+    "Active": true,
+    "Config": {
+      "Mounts": [
+        {
+          "Name": "",
+          "Description": "",
+          "Settable": null,
+          "Source": "/data",
+          "Destination": "/data",
+          "Type": "bind",
+          "Options": [
+            "shared",
+            "rbind"
+          ]
+        },
+        {
+          "Name": "",
+          "Description": "",
+          "Settable": null,
+          "Source": null,
+          "Destination": "/foobar",
+          "Type": "tmpfs",
+          "Options": null
+        }
+      ],
+      "Env": [
+        "DEBUG=1"
+      ],
+      "Args": null,
+      "Devices": null
+    },
+    "Manifest": {
+      "ManifestVersion": "v0",
+      "Description": "A test plugin for Docker",
+      "Documentation": "https://docs.docker.com/engine/extend/plugins/",
+      "Interface": {
+        "Types": [
+          "docker.volumedriver/1.0"
+        ],
+        "Socket": "plugins.sock"
+      },
+      "Entrypoint": [
+        "plugin-no-remove",
+        "/data"
+      ],
+      "Workdir": "",
+      "User": {
+      },
+      "Network": {
+        "Type": "host"
+      },
+      "Capabilities": null,
+      "Mounts": [
+        {
+          "Name": "",
+          "Description": "",
+          "Settable": null,
+          "Source": "/data",
+          "Destination": "/data",
+          "Type": "bind",
+          "Options": [
+            "shared",
+            "rbind"
+          ]
+        },
+        {
+          "Name": "",
+          "Description": "",
+          "Settable": null,
+          "Source": null,
+          "Destination": "/foobar",
+          "Type": "tmpfs",
+          "Options": null
+        }
+      ],
+      "Devices": [
+        {
+          "Name": "device",
+          "Description": "a host device to mount",
+          "Settable": null,
+          "Path": "/dev/cpu_dma_latency"
+        }
+      ],
+      "Env": [
+        {
+          "Name": "DEBUG",
+          "Description": "If set, prints debug messages",
+          "Settable": null,
+          "Value": "1"
+        }
+      ],
+      "Args": {
+        "Name": "args",
+        "Description": "command line arguments",
+        "Settable": null,
+        "Value": [
+
+        ]
+      }
+    }
+  }
+]
+```
+
+**Status codes**:
+
+-   **200** - no error
+-   **500** - server error
+
+### Install a plugin
+
+`POST /plugins/pull?name=<plugin name>`
+
+Pulls and installs a plugin. After the plugin is installed, it can be enabled
+using the [`POST /plugins/(plugin name)/enable` endpoint](#enable-a-plugin).
+
+**Example request**:
+
+```
+POST /plugins/pull?name=tiborvass/no-remove:latest HTTP/1.1
+```
+
+The `:latest` tag is optional, and is used as default if omitted. When using
+this endpoint to pull a plugin from the registry, the `X-Registry-Auth` header
+can be used to include a base64-encoded AuthConfig object. Refer to the [create
+an image](#create-an-image) section for more details.
+
+**Example response**:
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 175
+
+[
+  {
+    "Name": "network",
+    "Description": "",
+    "Value": [
+      "host"
+    ]
+  },
+  {
+    "Name": "mount",
+    "Description": "",
+    "Value": [
+      "/data"
+    ]
+  },
+  {
+    "Name": "device",
+    "Description": "",
+    "Value": [
+      "/dev/cpu_dma_latency"
+    ]
+  }
+]
+```
+
+**Query parameters**:
+
+- **name** -  Name of the plugin to pull. The name may include a tag or digest.
+    This parameter is required.
+
+**Status codes**:
+
+-   **200** - no error
+-   **500** - error parsing reference / not a valid repository/tag: repository
+      name must have at least one component
+-   **500** - plugin already exists
+
+### Inspect a plugin
+
+`GET /plugins/(plugin name)`
+
+Returns detailed information about an installed plugin.
+
+**Example request**:
+
+```
+GET /plugins/tiborvass/no-remove:latest HTTP/1.1
+```
+
+The `:latest` tag is optional, and is used as default if omitted.
+
+
+**Example response**:
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "Id": "5724e2c8652da337ab2eedd19fc6fc0ec908e4bd907c7421bf6a8dfc70c4c078",
+  "Name": "tiborvass/no-remove",
+  "Tag": "latest",
+  "Active": false,
+  "Config": {
+    "Mounts": [
+      {
+        "Name": "",
+        "Description": "",
+        "Settable": null,
+        "Source": "/data",
+        "Destination": "/data",
+        "Type": "bind",
+        "Options": [
+          "shared",
+          "rbind"
+        ]
+      },
+      {
+        "Name": "",
+        "Description": "",
+        "Settable": null,
+        "Source": null,
+        "Destination": "/foobar",
+        "Type": "tmpfs",
+        "Options": null
+      }
+    ],
+    "Env": [
+      "DEBUG=1"
+    ],
+    "Args": null,
+    "Devices": null
+  },
+  "Manifest": {
+    "ManifestVersion": "v0",
+    "Description": "A test plugin for Docker",
+    "Documentation": "https://docs.docker.com/engine/extend/plugins/",
+    "Interface": {
+      "Types": [
+        "docker.volumedriver/1.0"
+      ],
+      "Socket": "plugins.sock"
+    },
+    "Entrypoint": [
+      "plugin-no-remove",
+      "/data"
+    ],
+    "Workdir": "",
+    "User": {
+    },
+    "Network": {
+      "Type": "host"
+    },
+    "Capabilities": null,
+    "Mounts": [
+      {
+        "Name": "",
+        "Description": "",
+        "Settable": null,
+        "Source": "/data",
+        "Destination": "/data",
+        "Type": "bind",
+        "Options": [
+          "shared",
+          "rbind"
+        ]
+      },
+      {
+        "Name": "",
+        "Description": "",
+        "Settable": null,
+        "Source": null,
+        "Destination": "/foobar",
+        "Type": "tmpfs",
+        "Options": null
+      }
+    ],
+    "Devices": [
+      {
+        "Name": "device",
+        "Description": "a host device to mount",
+        "Settable": null,
+        "Path": "/dev/cpu_dma_latency"
+      }
+    ],
+    "Env": [
+      {
+        "Name": "DEBUG",
+        "Description": "If set, prints debug messages",
+        "Settable": null,
+        "Value": "1"
+      }
+    ],
+    "Args": {
+      "Name": "args",
+      "Description": "command line arguments",
+      "Settable": null,
+      "Value": [
+
+      ]
+    }
+  }
+}
+```
+
+**Status codes**:
+
+-   **200** - no error
+-   **404** - plugin not installed
+
+<!-- TODO Document "docker plugin set" endpoint once implemented
+### Configure a plugin
+
+`POST /plugins/(plugin name)/set`
+
+**Status codes**:
+
+-   **500** - not implemented
+
+-->
+
+### Enable a plugin
+
+`POST /plugins/(plugin name)/enable`
+
+Enables a plugin
+
+**Example request**:
+
+```
+POST /plugins/tiborvass/no-remove:latest/enable HTTP/1.1
+```
+
+The `:latest` tag is optional, and is used as default if omitted.
+
+
+**Example response**:
+
+```
+HTTP/1.1 200 OK
+Content-Length: 0
+Content-Type: text/plain; charset=utf-8
+```
+
+**Status codes**:
+
+-   **200** - no error
+-   **500** - plugin is already enabled
+
+### Disable a plugin
+
+`POST /plugins/(plugin name)/disable`
+
+Disables a plugin
+
+**Example request**:
+
+```
+POST /plugins/tiborvass/no-remove:latest/disable HTTP/1.1
+```
+
+The `:latest` tag is optional, and is used as default if omitted.
+
+
+**Example response**:
+
+```
+HTTP/1.1 200 OK
+Content-Length: 0
+Content-Type: text/plain; charset=utf-8
+```
+
+**Status codes**:
+
+-   **200** - no error
+-   **500** - plugin is already disabled
+
+### Remove a plugin
+
+`DELETE /plugins/(plugin name)`
+
+Removes a plugin
+
+**Example request**:
+
+```
+DELETE /plugins/tiborvass/no-remove:latest HTTP/1.1
+```
+
+The `:latest` tag is optional, and is used as default if omitted.
+
+**Example response**:
+
+```
+HTTP/1.1 200 OK
+Content-Length: 0
+Content-Type: text/plain; charset=utf-8
+```
+
+**Query parameters**:
+
+- **force** - Boolean value, set to `1` / `True` / `true` to force removing the
+    plugin. Forcing removal disables the plugin before removing, but may result
+    in issues if the plugin is in use by a container.
+
+**Status codes**:
+
+-   **200** - no error
+-   **404** - plugin not installed
+-   **500** - plugin is active
+
+<!-- TODO Document "docker plugin push" endpoint once we have "plugin build"
+
+### Push a plugin
+
+`POST /plugins/tiborvass/(plugin name)/push HTTP/1.1`
+
+Pushes a plugin to the registry.
+
+**Example request**:
+
+```
+POST /plugins/tiborvass/no-remove:latest HTTP/1.1
+```
+
+The `:latest` tag is optional, and is used as default if omitted. When using
+this endpoint to push a plugin to the registry, the `X-Registry-Auth` header
+can be used to include a base64-encoded AuthConfig object. Refer to the [create
+an image](#create-an-image) section for more details.
+
+**Example response**:
+
+**Status codes**:
+
+-   **200** - no error
+-   **404** - plugin not installed
+
+-->
+
+## 3.7 Nodes
 
 **Note**: Node operations require the engine to be part of a swarm.
 
@@ -3355,8 +4240,8 @@ List nodes
         "UpdatedAt": "2016-06-07T20:31:11.999868824Z",
         "Spec": {
           "Name": "my-node",
-          "Role": "MANAGER",
-          "Availability": "ACTIVE"
+          "Role": "manager",
+          "Availability": "active"
           "Labels": {
               "foo": "bar"
           }
@@ -3446,8 +4331,8 @@ Return low-level information on the node `id`
       "UpdatedAt": "2016-06-07T20:31:11.999868824Z",
       "Spec": {
         "Name": "my-node",
-        "Role": "MANAGER",
-        "Availability": "ACTIVE"
+        "Role": "manager",
+        "Availability": "active"
         "Labels": {
             "foo": "bar"
         }
@@ -3503,14 +4388,145 @@ Return low-level information on the node `id`
 -   **404** – no such node
 -   **500** – server error
 
-## 3.7 Swarm
+### Remove a node
+
+
+`DELETE /nodes/(id)`
+
+Remove a node [`id`] from the swarm.
+
+**Example request**:
+
+    DELETE /nodes/24ifsmvkjbyhk HTTP/1.1
+
+**Example response**:
+
+    HTTP/1.1 200 OK
+    Content-Length: 0
+    Content-Type: text/plain; charset=utf-8
+
+**Query parameters**:
+
+-   **force** - 1/True/true or 0/False/false, Force remove an active node.
+        Default `false`.
+
+**Status codes**:
+
+-   **200** – no error
+-   **404** – no such node
+-   **500** – server error
+
+### Update a node
+
+
+`POST /nodes/(id)/update`
+
+Update the node `id`.
+
+The payload of the `POST` request is the new `NodeSpec` and
+overrides the current `NodeSpec` for the specified node.
+
+If `Availability` or `Role` are omitted, this returns an
+error. Any other field omitted resets the current value to either
+an empty value or the default cluster-wide value.
+
+**Example Request**
+
+    POST /nodes/24ifsmvkjbyhk/update?version=8 HTTP/1.1
+    Content-Type: application/json
+
+    {
+      "Availability": "active",
+      "Name": "node-name",
+      "Role": "manager",
+      "Labels": {
+        "foo": "bar"
+      }
+    }
+
+**Example response**:
+
+    HTTP/1.1 200 OK
+    Content-Length: 0
+    Content-Type: text/plain; charset=utf-8
+
+**Query parameters**:
+
+- **version** – The version number of the node object being updated. This is
+  required to avoid conflicting writes.
+
+JSON Parameters:
+
+- **Annotations** – Optional medata to associate with the service.
+    - **Name** – User-defined name for the service.
+    - **Labels** – A map of labels to associate with the service (e.g.,
+      `{"key":"value"[,"key2":"value2"]}`).
+- **Role** - Role of the node (worker/manager).
+- **Availability** - Availability of the node (active/pause/drain).
+
+
+**Status codes**:
+
+-   **200** – no error
+-   **404** – no such node
+-   **500** – server error
+
+## 3.8 Swarm
+
+### Inspect swarm
+
+
+`GET /swarm`
+
+Inspect swarm
+
+**Example response**:
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+
+    {
+      "CreatedAt" : "2016-08-15T16:00:20.349727406Z",
+      "Spec" : {
+        "Dispatcher" : {
+          "HeartbeatPeriod" : 5000000000
+        },
+        "Orchestration" : {
+         "TaskHistoryRetentionLimit" : 10
+        },
+        "CAConfig" : {
+          "NodeCertExpiry" : 7776000000000000
+        },
+        "Raft" : {
+          "LogEntriesForSlowFollowers" : 500,
+          "HeartbeatTick" : 1,
+          "SnapshotInterval" : 10000,
+          "ElectionTick" : 3
+        },
+        "TaskDefaults" : {},
+        "Name" : "default"
+      },
+     "JoinTokens" : {
+        "Worker" : "SWMTKN-1-1h8aps2yszaiqmz2l3oc5392pgk8e49qhx2aj3nyv0ui0hez2a-6qmn92w6bu3jdvnglku58u11a",
+        "Manager" : "SWMTKN-1-1h8aps2yszaiqmz2l3oc5392pgk8e49qhx2aj3nyv0ui0hez2a-8llk83c4wm9lwioey2s316r9l"
+     },
+     "ID" : "70ilmkj2f6sp2137c753w2nmt",
+     "UpdatedAt" : "2016-08-15T16:32:09.623207604Z",
+     "Version" : {
+       "Index" : 51
+    }
+  }
+
+**Status codes**:
+
+- **200** - no error
 
 ### Initialize a new swarm
 
 
 `POST /swarm/init`
 
-Initialize a new swarm
+Initialize a new swarm. The body of the HTTP response includes the node ID.
 
 **Example request**:
 
@@ -3532,8 +4548,12 @@ Initialize a new swarm
 **Example response**:
 
     HTTP/1.1 200 OK
-    Content-Length: 0
-    Content-Type: text/plain; charset=utf-8
+    Content-Length: 28
+    Content-Type: application/json
+    Date: Thu, 01 Sep 2016 21:49:13 GMT
+    Server: Docker/1.12.0 (linux)
+
+    "7v2t30z9blmxuhnyo6s4cpenp"
 
 **Status codes**:
 
@@ -3617,7 +4637,7 @@ JSON Parameters:
   address is used. If `AdvertiseAddr` is not specified, it will be automatically detected when
   possible.
 - **RemoteAddr** – Address of any manager node already participating in the swarm.
-- **JoinToken** – Secret token for joining this Swarm.
+- **JoinToken** – Secret token for joining this swarm.
 
 ### Leave a swarm
 
@@ -3635,6 +4655,10 @@ Leave a swarm
     HTTP/1.1 200 OK
     Content-Length: 0
     Content-Type: text/plain; charset=utf-8
+
+**Query parameters**:
+
+- **force** - Boolean (0/1, false/true). Force leave swarm, even if this is the last manager or that it will break the cluster.
 
 **Status codes**:
 
@@ -3722,7 +4746,7 @@ JSON Parameters:
     - **Worker** - Token to use for joining as a worker.
     - **Manager** - Token to use for joining as a manager.
 
-## 3.8 Services
+## 3.9 Services
 
 **Note**: Service operations require to first be part of a swarm.
 
@@ -3761,7 +4785,8 @@ List services
               "Reservations": {}
             },
             "RestartPolicy": {
-              "Condition": "ANY"
+              "Condition": "any",
+              "MaxAttempts": 0
             },
             "Placement": {}
           },
@@ -3771,26 +4796,36 @@ List services
             }
           },
           "UpdateConfig": {
-            "Parallelism": 1
+            "Parallelism": 1,
+            "FailureAction": "pause"
           },
           "EndpointSpec": {
-            "Mode": "VIP",
-            "Ingress": "PUBLICPORT",
-            "ExposedPorts": [
+            "Mode": "vip",
+            "Ports": [
               {
                 "Protocol": "tcp",
-                "Port": 6379
+                "TargetPort": 6379,
+                "PublishedPort": 30001
               }
             ]
           }
         },
         "Endpoint": {
-          "Spec": {},
-          "ExposedPorts": [
+          "Spec": {
+            "Mode": "vip",
+            "Ports": [
+              {
+                "Protocol": "tcp",
+                "TargetPort": 6379,
+                "PublishedPort": 30001
+              }
+            ]
+          },
+          "Ports": [
             {
               "Protocol": "tcp",
-              "Port": 6379,
-              "PublicPort": 30000
+              "TargetPort": 6379,
+              "PublishedPort": 30001
             }
           ],
           "VirtualIPs": [
@@ -3821,10 +4856,12 @@ List services
 
 ### Create a service
 
-
 `POST /services/create`
 
-Create a service
+Create a service. When using this endpoint to create a service using a private
+repository from the registry, the `X-Registry-Auth` header must be used to
+include a base64-encoded AuthConfig object. Refer to the [create an
+image](#create-an-image) section for more details.
 
 **Example request**:
 
@@ -3904,7 +4941,7 @@ Create a service
     Content-Type: application/json
 
     {
-      "Id":"ak7w3gjqoa3kuz8xcpnyy0pvl"
+      "ID":"ak7w3gjqoa3kuz8xcpnyy0pvl"
     }
 
 **Status codes**:
@@ -3913,12 +4950,10 @@ Create a service
 - **406** – server error or node is not part of a swarm
 - **409** – name conflicts with an existing object
 
-JSON Parameters:
+**JSON Parameters**:
 
-- **Annotations** – Optional medata to associate with the service.
-    - **Name** – User-defined name for the service.
-    - **Labels** – A map of labels to associate with the service (e.g.,
-      `{"key":"value"[,"key2":"value2"]}`).
+- **Name** – User-defined name for the service.
+- **Labels** – A map of labels to associate with the service (e.g., `{"key":"value"[,"key2":"value2"]}`).
 - **TaskTemplate** – Specification of the tasks to start as part of the new service.
     - **ContainerSpec** - Container settings for containers started as part of this task.
         - **Image** – A string specifying the image name to use for the container.
@@ -3976,13 +5011,21 @@ JSON Parameters:
     - **FailureAction** - Action to take if an updated task fails to run, or stops running during the
       update. Values are `continue` and `pause`.
 - **Networks** – Array of network names or IDs to attach the service to.
-- **Endpoint** – Properties that can be configured to access and load balance a service.
-    - **Spec** –
-        - **Mode** – The mode of resolution to use for internal load balancing
-          between tasks (`vip` or `dnsrr`).
-        - **Ports** – Exposed ports that this service is accessible on from the outside, in the form
-          of: `"Ports": { "<port>/<tcp|udp>: {}" }`
-    - **VirtualIPs**
+- **EndpointSpec** – Properties that can be configured to access and load balance a service.
+    - **Mode** – The mode of resolution to use for internal load balancing
+      between tasks (`vip` or `dnsrr`). Defaults to `vip` if not provided.
+    - **Ports** – List of exposed ports that this service is accessible on from
+      the outside, in the form of:
+      `{"Protocol": <"tcp"|"udp">, "PublishedPort": <port>, "TargetPort": <port>}`.
+      Ports can only be provided if `vip` resolution mode is used.
+
+**Request Headers**:
+
+- **Content-type** – Set to `"application/json"`.
+- **X-Registry-Auth** – base64-encoded AuthConfig object, containing either
+  login information, or a token. Refer to the [create an image](#create-an-image)
+  section for more details.
+
 
 ### Remove a service
 
@@ -3997,11 +5040,13 @@ Stop and remove the service `id`
 
 **Example response**:
 
-    HTTP/1.1 204 No Content
+    HTTP/1.1 200 OK
+    Content-Length: 0
+    Content-Type: text/plain; charset=utf-8
 
 **Status codes**:
 
--   **204** – no error
+-   **200** – no error
 -   **404** – no such service
 -   **500** – server error
 
@@ -4027,7 +5072,7 @@ Return information on the service `id`.
       "UpdatedAt": "2016-06-07T21:10:20.276301259Z",
       "Spec": {
         "Name": "redis",
-        "Task": {
+        "TaskTemplate": {
           "ContainerSpec": {
             "Image": "redis"
           },
@@ -4036,7 +5081,8 @@ Return information on the service `id`.
             "Reservations": {}
           },
           "RestartPolicy": {
-            "Condition": "ANY"
+            "Condition": "any",
+            "MaxAttempts": 0
           },
           "Placement": {}
         },
@@ -4046,26 +5092,36 @@ Return information on the service `id`.
           }
         },
         "UpdateConfig": {
-          "Parallelism": 1
+          "Parallelism": 1,
+          "FailureAction": "pause"
         },
         "EndpointSpec": {
-          "Mode": "VIP",
-          "Ingress": "PUBLICPORT",
-          "ExposedPorts": [
+          "Mode": "vip",
+          "Ports": [
             {
               "Protocol": "tcp",
-              "Port": 6379
+              "TargetPort": 6379,
+              "PublishedPort": 30001
             }
           ]
         }
       },
       "Endpoint": {
-        "Spec": {},
-        "ExposedPorts": [
+        "Spec": {
+          "Mode": "vip",
+          "Ports": [
+            {
+              "Protocol": "tcp",
+              "TargetPort": 6379,
+              "PublishedPort": 30001
+            }
+          ]
+        },
+        "Ports": [
           {
             "Protocol": "tcp",
-            "Port": 6379,
-            "PublicPort": 30001
+            "TargetPort": 6379,
+            "PublishedPort": 30001
           }
         ],
         "VirtualIPs": [
@@ -4085,14 +5141,18 @@ Return information on the service `id`.
 
 ### Update a service
 
-
 `POST /services/(id or name)/update`
 
-Update the service `id`.
+Update a service. When using this endpoint to create a service using a
+private repository from the registry, the `X-Registry-Auth` header can be used
+to update the authentication information for that is stored for the service.
+The header contains a base64-encoded AuthConfig object. Refer to the [create an
+image](#create-an-image) section for more details.
 
 **Example request**:
 
-    POST /services/1cb4dnqcyx6m66g2t538x3rxha/update HTTP/1.1
+    POST /services/1cb4dnqcyx6m66g2t538x3rxha/update?version=23 HTTP/1.1
+    Content-Type: application/json
 
     {
       "Name": "top",
@@ -4128,16 +5188,14 @@ Update the service `id`.
 
 **Example response**:
 
-      HTTP/1.1 200 OK
-      Content-Length: 0
-      Content-Type: text/plain; charset=utf-8
+    HTTP/1.1 200 OK
+    Content-Length: 0
+    Content-Type: text/plain; charset=utf-8
 
 **JSON Parameters**:
 
-- **Annotations** – Optional medata to associate with the service.
-    - **Name** – User-defined name for the service.
-    - **Labels** – A map of labels to associate with the service (e.g.,
-      `{"key":"value"[,"key2":"value2"]}`).
+- **Name** – User-defined name for the service.
+- **Labels** – A map of labels to associate with the service (e.g., `{"key":"value"[,"key2":"value2"]}`).
 - **TaskTemplate** – Specification of the tasks to start as part of the new service.
     - **ContainerSpec** - Container settings for containers started as part of this task.
         - **Image** – A string specifying the image name to use for the container.
@@ -4177,7 +5235,7 @@ Update the service `id`.
       as part of this service.
         - **Condition** – Condition for restart (`none`, `on-failure`, or `any`).
         - **Delay** – Delay between restart attempts.
-        - **Attempts** – Maximum attempts to restart a given container before giving up (default value
+        - **MaxAttempts** – Maximum attempts to restart a given container before giving up (default value
           is 0, which is ignored).
         - **Window** – Windows is the time window used to evaluate the restart policy (default value is
           0, which is unbounded).
@@ -4188,18 +5246,25 @@ Update the service `id`.
       parallelism).
     - **Delay** – Amount of time between updates.
 - **Networks** – Array of network names or IDs to attach the service to.
-- **Endpoint** – Properties that can be configured to access and load balance a service.
-    - **Spec** –
-        - **Mode** – The mode of resolution to use for internal load balancing
-          between tasks (`vip` or `dnsrr`).
-        - **Ports** – Exposed ports that this service is accessible on from the outside, in the form
-          of: `"Ports": { "<port>/<tcp|udp>: {}" }`
-    - **VirtualIPs**
+- **EndpointSpec** – Properties that can be configured to access and load balance a service.
+    - **Mode** – The mode of resolution to use for internal load balancing
+      between tasks (`vip` or `dnsrr`). Defaults to `vip` if not provided.
+    - **Ports** – List of exposed ports that this service is accessible on from
+      the outside, in the form of:
+      `{"Protocol": <"tcp"|"udp">, "PublishedPort": <port>, "TargetPort": <port>}`.
+      Ports can only be provided if `vip` resolution mode is used.
 
 **Query parameters**:
 
 - **version** – The version number of the service object being updated. This is
   required to avoid conflicting writes.
+
+**Request Headers**:
+
+- **Content-type** – Set to `"application/json"`.
+- **X-Registry-Auth** – base64-encoded AuthConfig object, containing either
+  login information, or a token. Refer to the [create an image](#create-an-image)
+  section for more details.
 
 **Status codes**:
 
@@ -4207,7 +5272,7 @@ Update the service `id`.
 -   **404** – no such service
 -   **500** – server error
 
-## 3.9 Tasks
+## 3.10 Tasks
 
 **Note**: Task operations require the engine to be part of a swarm.
 
@@ -4232,7 +5297,6 @@ List tasks
         },
         "CreatedAt": "2016-06-07T21:07:31.171892745Z",
         "UpdatedAt": "2016-06-07T21:07:31.376370513Z",
-        "Name": "hopeful_cori",
         "Spec": {
           "ContainerSpec": {
             "Image": "redis"
@@ -4242,21 +5306,24 @@ List tasks
             "Reservations": {}
           },
           "RestartPolicy": {
-            "Condition": "ANY"
+            "Condition": "any",
+            "MaxAttempts": 0
           },
           "Placement": {}
         },
         "ServiceID": "9mnpnzenvg8p8tdbtq4wvbkcz",
-        "Instance": 1,
-        "NodeID": "24ifsmvkjbyhk",
-        "ServiceAnnotations": {},
+        "Slot": 1,
+        "NodeID": "60gvrl6tm78dmak4yl7srz94v",
         "Status": {
           "Timestamp": "2016-06-07T21:07:31.290032978Z",
-          "State": "FAILED",
-          "Message": "execution failed",
-          "ContainerStatus": {}
+          "State": "running",
+          "Message": "started",
+          "ContainerStatus": {
+            "ContainerID": "e5d62702a1b48d01c3e02ca1e0212a250801fa8d67caca0b6f35919ebc12f035",
+            "PID": 677
+          }
         },
-        "DesiredState": "SHUTDOWN",
+        "DesiredState": "running",
         "NetworksAttachments": [
           {
             "Network": {
@@ -4272,12 +5339,12 @@ List tasks
                   "com.docker.swarm.internal": "true"
                 },
                 "DriverConfiguration": {},
-                "IPAM": {
+                "IPAMOptions": {
                   "Driver": {},
                   "Configs": [
                     {
-                      "Family": "UNKNOWN",
-                      "Subnet": "10.255.0.0/16"
+                      "Subnet": "10.255.0.0/16",
+                      "Gateway": "10.255.0.1"
                     }
                   ]
                 }
@@ -4288,14 +5355,14 @@ List tasks
                   "com.docker.network.driver.overlay.vxlanid_list": "256"
                 }
               },
-              "IPAM": {
+              "IPAMOptions": {
                 "Driver": {
                   "Name": "default"
                 },
                 "Configs": [
                   {
-                    "Family": "UNKNOWN",
-                    "Subnet": "10.255.0.0/16"
+                    "Subnet": "10.255.0.0/16",
+                    "Gateway": "10.255.0.1"
                   }
                 ]
               }
@@ -4305,26 +5372,6 @@ List tasks
             ]
           }
         ],
-        "Endpoint": {
-          "Spec": {},
-          "ExposedPorts": [
-            {
-              "Protocol": "tcp",
-              "Port": 6379,
-              "PublicPort": 30000
-            }
-          ],
-          "VirtualIPs": [
-            {
-              "NetworkID": "4qvuz4ko70xaltuqbt8956gd1",
-              "Addr": "10.255.0.2/16"
-            },
-            {
-              "NetworkID": "4qvuz4ko70xaltuqbt8956gd1",
-              "Addr": "10.255.0.3/16"
-            }
-          ]
-        }
       },
       {
         "ID": "1yljwbmlr8er2waf8orvqpwms",
@@ -4343,21 +5390,23 @@ List tasks
             "Reservations": {}
           },
           "RestartPolicy": {
-            "Condition": "ANY"
+            "Condition": "any",
+            "MaxAttempts": 0
           },
           "Placement": {}
         },
         "ServiceID": "9mnpnzenvg8p8tdbtq4wvbkcz",
-        "Instance": 1,
-        "NodeID": "24ifsmvkjbyhk",
-        "ServiceAnnotations": {},
+        "Slot": 1,
+        "NodeID": "60gvrl6tm78dmak4yl7srz94v",
         "Status": {
           "Timestamp": "2016-06-07T21:07:30.202183143Z",
-          "State": "FAILED",
-          "Message": "execution failed",
-          "ContainerStatus": {}
+          "State": "shutdown",
+          "Message": "shutdown",
+          "ContainerStatus": {
+            "ContainerID": "1cf8d63d18e79668b0004a4be4c6ee58cddfad2dae29506d8781581d0688a213"
+          }
         },
-        "DesiredState": "SHUTDOWN",
+        "DesiredState": "shutdown",
         "NetworksAttachments": [
           {
             "Network": {
@@ -4373,12 +5422,12 @@ List tasks
                   "com.docker.swarm.internal": "true"
                 },
                 "DriverConfiguration": {},
-                "IPAM": {
+                "IPAMOptions": {
                   "Driver": {},
                   "Configs": [
                     {
-                      "Family": "UNKNOWN",
-                      "Subnet": "10.255.0.0/16"
+                      "Subnet": "10.255.0.0/16",
+                      "Gateway": "10.255.0.1"
                     }
                   ]
                 }
@@ -4389,14 +5438,14 @@ List tasks
                   "com.docker.network.driver.overlay.vxlanid_list": "256"
                 }
               },
-              "IPAM": {
+              "IPAMOptions": {
                 "Driver": {
                   "Name": "default"
                 },
                 "Configs": [
                   {
-                    "Family": "UNKNOWN",
-                    "Subnet": "10.255.0.0/16"
+                    "Subnet": "10.255.0.0/16",
+                    "Gateway": "10.255.0.1"
                   }
                 ]
               }
@@ -4405,27 +5454,7 @@ List tasks
               "10.255.0.5/16"
             ]
           }
-        ],
-        "Endpoint": {
-          "Spec": {},
-          "ExposedPorts": [
-            {
-              "Protocol": "tcp",
-              "Port": 6379,
-              "PublicPort": 30000
-            }
-          ],
-          "VirtualIPs": [
-            {
-              "NetworkID": "4qvuz4ko70xaltuqbt8956gd1",
-              "Addr": "10.255.0.2/16"
-            },
-            {
-              "NetworkID": "4qvuz4ko70xaltuqbt8956gd1",
-              "Addr": "10.255.0.3/16"
-            }
-          ]
-        }
+        ]
       }
     ]
 
@@ -4436,7 +5465,7 @@ List tasks
   - `id=<task id>`
   - `name=<task name>`
   - `service=<service name>`
-  - `node=<node id>`
+  - `node=<node id or name>`
   - `label=key` or `label="key=value"`
   - `desired-state=(running | shutdown | accepted)`
 
@@ -4465,7 +5494,6 @@ Get details on a task
       },
       "CreatedAt": "2016-06-07T21:07:31.171892745Z",
       "UpdatedAt": "2016-06-07T21:07:31.376370513Z",
-      "Name": "hopeful_cori",
       "Spec": {
         "ContainerSpec": {
           "Image": "redis"
@@ -4475,21 +5503,24 @@ Get details on a task
           "Reservations": {}
         },
         "RestartPolicy": {
-          "Condition": "ANY"
+          "Condition": "any",
+          "MaxAttempts": 0
         },
         "Placement": {}
       },
       "ServiceID": "9mnpnzenvg8p8tdbtq4wvbkcz",
-      "Instance": 1,
-      "NodeID": "24ifsmvkjbyhk",
-      "ServiceAnnotations": {},
+      "Slot": 1,
+      "NodeID": "60gvrl6tm78dmak4yl7srz94v",
       "Status": {
         "Timestamp": "2016-06-07T21:07:31.290032978Z",
-        "State": "FAILED",
-        "Message": "execution failed",
-        "ContainerStatus": {}
+        "State": "running",
+        "Message": "started",
+        "ContainerStatus": {
+          "ContainerID": "e5d62702a1b48d01c3e02ca1e0212a250801fa8d67caca0b6f35919ebc12f035",
+          "PID": 677
+        }
       },
-      "DesiredState": "SHUTDOWN",
+      "DesiredState": "running",
       "NetworksAttachments": [
         {
           "Network": {
@@ -4505,12 +5536,12 @@ Get details on a task
                 "com.docker.swarm.internal": "true"
               },
               "DriverConfiguration": {},
-              "IPAM": {
+              "IPAMOptions": {
                 "Driver": {},
                 "Configs": [
                   {
-                    "Family": "UNKNOWN",
-                    "Subnet": "10.255.0.0/16"
+                    "Subnet": "10.255.0.0/16",
+                    "Gateway": "10.255.0.1"
                   }
                 ]
               }
@@ -4521,14 +5552,14 @@ Get details on a task
                 "com.docker.network.driver.overlay.vxlanid_list": "256"
               }
             },
-            "IPAM": {
+            "IPAMOptions": {
               "Driver": {
                 "Name": "default"
               },
               "Configs": [
                 {
-                  "Family": "UNKNOWN",
-                  "Subnet": "10.255.0.0/16"
+                  "Subnet": "10.255.0.0/16",
+                  "Gateway": "10.255.0.1"
                 }
               ]
             }
@@ -4537,27 +5568,7 @@ Get details on a task
             "10.255.0.10/16"
           ]
         }
-      ],
-      "Endpoint": {
-        "Spec": {},
-        "ExposedPorts": [
-          {
-            "Protocol": "tcp",
-            "Port": 6379,
-            "PublicPort": 30000
-          }
-        ],
-        "VirtualIPs": [
-          {
-            "NetworkID": "4qvuz4ko70xaltuqbt8956gd1",
-            "Addr": "10.255.0.2/16"
-          },
-          {
-            "NetworkID": "4qvuz4ko70xaltuqbt8956gd1",
-            "Addr": "10.255.0.3/16"
-          }
-        ]
-      }
+      ]
     }
 
 **Status codes**:

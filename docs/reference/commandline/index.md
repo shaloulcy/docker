@@ -39,7 +39,6 @@ read the [`dockerd`](dockerd.md) reference page.
 |:--------|:-------------------------------------------------------------------|
 | [build](build.md) |  Build an image from a Dockerfile                        |
 | [commit](commit.md) | Create a new image from a container's changes          |
-| [export](export.md) | Export a container's filesystem as a tar archive       |
 | [history](history.md) | Show the history of an image                         |
 | [images](images.md) | List images                                            |
 | [import](import.md) | Import the contents from a tarball to create a filesystem image |
@@ -58,6 +57,7 @@ read the [`dockerd`](dockerd.md) reference page.
 | [diff](diff.md) | Inspect changes on a container's filesystem                |
 | [events](events.md) | Get real time events from the server                   |
 | [exec](exec.md) | Run a command in a running container                       |
+| [export](export.md) | Export a container's filesystem as a tar archive       |
 | [kill](kill.md) | Kill a running container                                   |
 | [logs](logs.md) | Fetch the logs of a container                              |
 | [pause](pause.md) | Pause all processes within a container                   |
@@ -115,7 +115,7 @@ read the [`dockerd`](dockerd.md) reference page.
 | [node demote](node_demote.md) | Demotes an existing manager so that it is no longer a manager |
 | [node inspect](node_inspect.md) | Inspect a node in the swarm                |
 | [node update](node_update.md) | Update attributes for a node                 |
-| [node ps](node_ps.md) | List tasks running on a node                   |
+| [node ps](node_ps.md) | List tasks running on one or more nodes                         |
 | [node ls](node_ls.md) | List nodes in the swarm                              |
 | [node rm](node_rm.md) | Remove one or more nodes from the swarm                         |
 
@@ -136,7 +136,7 @@ read the [`dockerd`](dockerd.md) reference page.
 | [service create](service_create.md) | Create a new service                   |
 | [service inspect](service_inspect.md) | Inspect a service                    |
 | [service ls](service_ls.md) | List services in the swarm                     |
-| [service rm](service_rm.md) | Reemove a swervice from the swarm              |
+| [service rm](service_rm.md) | Remove a service from the swarm                |
 | [service scale](service_scale.md) | Set the number of replicas for the desired state of the service |
 | [service ps](service_ps.md) | List the tasks of a service              |
 | [service update](service_update.md)  | Update the attributes of a service    |
